@@ -170,6 +170,25 @@
   #logged { font-size: .9rem; }
   .nudge { margin-top: 14px; font-size: .9rem; color: var(--muted); text-align: center; }
   .nudge button { padding: 0; border: 0; color: var(--gold); font-weight: 500; font-size: inherit; }
+  /* Telegram */
+  #tg p { margin: 0 0 12px; }
+  .steps { margin: 0 0 16px; padding-left: 1.2em; color: var(--muted); font-size: .92rem; }
+  .steps li { margin-bottom: 6px; padding-left: 4px; }
+  .steps strong, .steps code { color: var(--text); font-weight: 500; }
+  code { font: .88em ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--field); padding: 1px 6px; border-radius: 6px; }
+  a { color: var(--gold); text-decoration: none; }
+  a.button {
+    display: inline-block; font-size: .92rem; font-weight: 500; padding: 10px 18px; border-radius: 999px;
+    background: var(--gold); color: var(--on-gold);
+  }
+  .switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); margin-top: 14px; font-size: .95rem; }
+  .switch input { appearance: none; -webkit-appearance: none; width: 46px; height: 28px; border-radius: 999px; padding: 0; margin: 0;
+    background: var(--field); border: 1px solid var(--line-strong); position: relative; cursor: pointer; flex: none; transition: background .2s; }
+  .switch input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%;
+    background: var(--muted); transition: transform .2s, background .2s; }
+  .switch input:checked { background: var(--gold-soft); border-color: var(--gold-line); }
+  .switch input:checked::after { transform: translateX(18px); background: var(--gold); }
+
   footer { text-align: center; margin-top: 26px; }
   [hidden] { display: none !important; }
 </style>
@@ -226,6 +245,10 @@
           <button id="test">Ask me now</button>
           <button id="refresh">Refresh</button>
         </div>
+      </div>
+      <div class="card">
+        <p class="eyebrow">Reply from the notification</p>
+        <div id="tg"></div>
       </div>
       <footer><button class="quiet" id="disconnect">Disconnect this device</button></footer>
     </section>
@@ -390,7 +413,7 @@
       api('POST', '/api/subscribe', { subscription: sub.toJSON() }).catch(() => {});
     } else {
       box.innerHTML = '<button class="primary" id="enable">Turn on reminders</button>';
-      $('nudge').hidden = false;
+      $('nudge').hidden = Boolean(data.telegram?.linked);
       $('enable').addEventListener('click', enableReminders);
     }
     if (error) box.insertAdjacentHTML('beforeend', `<p class="err">${error.replace(/</g, '&lt;')}</p>`);
@@ -452,6 +475,60 @@
     $('next').textContent = n ? dayLabel(n) : 'No upcoming reminders. Add a time frame in Schedule.';
     if (document.activeElement?.closest?.('#windows') == null && document.activeElement !== $('interval')) renderSchedule();
     renderLog();
+    renderTelegram();
+  }
+
+  // ---- Telegram ---------------------------------------------------------
+
+  let tgShown = '';
+  function renderTelegram(force = false) {
+    const tg = data.telegram || { configured: false };
+    const key = JSON.stringify(tg);
+    if (!force && key === tgShown) return; // don't wipe a half-typed token
+    tgShown = key;
+    const box = $('tg');
+    const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    if (!tg.configured) {
+      box.innerHTML = `
+        <p>iPhone only lets apps from the App Store put a reply box in notifications. Telegram has one, so questions can come from your own Telegram bot and you answer by pulling the notification down.</p>
+        <ol class="steps">
+          <li>Install <strong>Telegram</strong> and open a chat with <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>.</li>
+          <li>Send <code>/newbot</code>, then pick a name and a username ending in <strong>bot</strong>.</li>
+          <li>BotFather replies with a token. Copy it and paste it below.</li>
+        </ol>
+        <input type="password" id="tg-token" placeholder="123456789:AA…" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <div class="row" style="margin-top:12px"><button class="primary" id="tg-save">Connect bot</button></div>
+        <p class="err" id="tg-msg" style="margin:10px 0 0"></p>`;
+      $('tg-save').addEventListener('click', async () => {
+        const token = $('tg-token').value.trim();
+        if (!token) { $('tg-token').focus(); return; }
+        $('tg-save').disabled = true; $('tg-msg').textContent = '';
+        try { data.telegram = (await api('POST', '/api/telegram', { token })).telegram; renderTelegram(true); }
+        catch (err) { $('tg-msg').textContent = err.message; $('tg-save').disabled = false; }
+      });
+    } else if (!tg.linked) {
+      box.innerHTML = `
+        <p>Your bot <strong>@${esc(tg.username)}</strong> is ready. Last step: open it in Telegram and tap <strong>Start</strong>.</p>
+        <div class="row"><a class="button" href="${esc(tg.linkUrl)}" target="_blank" rel="noopener">Open in Telegram</a>
+          <button class="quiet" id="tg-check">I’ve tapped Start</button></div>
+        <div class="row" style="margin-top:14px"><button class="quiet danger" id="tg-remove">Remove bot</button></div>`;
+      $('tg-check').addEventListener('click', refresh);
+    } else {
+      box.innerHTML = `
+        <p><span class="dot"></span>Connected to <strong>@${esc(tg.username)}</strong></p>
+        <p class="muted" style="font-size:.92rem">Questions arrive in Telegram. Pull the notification down, type, and send. It’s logged here automatically.</p>
+        <label class="switch">Also send app notifications <input type="checkbox" id="tg-push" ${tg.alsoPush ? 'checked' : ''}></label>
+        <button class="quiet danger" id="tg-remove">Disconnect Telegram</button>`;
+      $('tg-push').addEventListener('change', async (e) => {
+        try { data.telegram = (await api('PUT', '/api/telegram', { alsoPush: e.target.checked })).telegram; tgShown = JSON.stringify(data.telegram); }
+        catch (err) { e.target.checked = !e.target.checked; alert(err.message); }
+      });
+    }
+    $('tg-remove')?.addEventListener('click', async () => {
+      if (!confirm('Stop sending questions to Telegram?')) return;
+      try { data.telegram = (await api('DELETE', '/api/telegram')).telegram; renderTelegram(true); } catch (err) { alert(err.message); }
+    });
+    if (tg.linked) $('nudge').hidden = true;
   }
 
   function dayLabel(d) {

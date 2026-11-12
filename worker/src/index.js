@@ -28,6 +28,11 @@ export default {
     const url = new URL(request.url);
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === '/api/vapid-key') return json({ key: env.VAPID_PUBLIC_KEY || null });
+    // Telegram calls this directly; the Durable Object checks Telegram's secret header.
+    if (url.pathname === '/telegram/webhook' && request.method === 'POST') {
+      const res = await stub(env).fetch(request);
+      return new Response(null, { status: res.status === 403 ? 403 : 200 });
+    }
     if (!url.pathname.startsWith('/api/')) return json({ name: 'activity-logger', ok: true });
     if (!(await authorized(request, env))) return json({ error: 'Wrong or missing app key' }, 401);
     const res = await stub(env).fetch(request);

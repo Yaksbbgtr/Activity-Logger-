@@ -121,3 +121,60 @@ test('full flow: reminder, answer, missed prompt, dead subscription pruned', asy
   assert.deepEqual(await call('POST', '/tick'), { sent: 0 });
   assert.equal(pushes.length, 3);
 });
+
+test('Telegram: setup, link, questions, replies, strangers ignored', async () => {
+  const calls = [];
+  const TOKEN = '123456789:AAEhBP0av18bTGnStoXXXXXXXXXXXXXXXXX';
+  const fetchImpl = async (url, init) => {
+    const m = /^https:\/\/api\.telegram\.org\/bot([^/]+)\/(\w+)$/.exec(url);
+    if (!m) return new Response('', { status: 201 }); // web push
+    const body = JSON.parse(init.body || '{}');
+    calls.push({ method: m[2], body });
+    if (m[1] !== TOKEN) return Response.json({ ok: false, error_code: 401, description: 'Unauthorized' });
+    if (m[2] === 'getMe') return Response.json({ ok: true, result: { username: 'my_activity_bot' } });
+    return Response.json({ ok: true, result: true });
+  };
+  let now = new Date('2026-11-16T09:10:00Z');
+  const core = new LoggerCore(memoryStorage(), {}, { fetchImpl, clock: () => now });
+  const call = (method, path, body, headers = {}) =>
+    core.handle(new Request(`https://logger.example.dev${path}`, { method, headers, body: body && JSON.stringify(body) }));
+
+  assert.equal((await call('POST', '/api/telegram', { token: 'nope' })).status, 400);
+  assert.equal((await call('POST', '/api/telegram', { token: '123456789:AAEhBP0av18bTGnStoWRONGWRONGWRONGWRONGW' })).status, 400);
+
+  const setup = await call('POST', '/api/telegram', { token: TOKEN });
+  assert.equal(setup.telegram.username, 'my_activity_bot');
+  assert.equal(setup.telegram.linked, false);
+  const hook = calls.find((c) => c.method === 'setWebhook').body;
+  assert.equal(hook.url, 'https://logger.example.dev/telegram/webhook');
+  const code = new URL(setup.telegram.linkUrl).searchParams.get('start');
+  const state = await call('GET', '/api/state');
+  assert.equal(JSON.stringify(state).includes(TOKEN), false, 'token never leaves the server');
+
+  const update = (chatId, text, id = 1) => ({ message: { message_id: id, chat: { id: chatId, type: 'private' }, text } });
+  const H = { 'X-Telegram-Bot-Api-Secret-Token': hook.secret_token };
+  assert.equal((await call('POST', '/telegram/webhook', update(42, `/start ${code}`), { 'X-Telegram-Bot-Api-Secret-Token': 'bad' })).status, 403);
+  await call('POST', '/telegram/webhook', update(99, '/start wrongcode'), H);
+  assert.equal((await call('GET', '/api/state')).telegram.linked, false, 'wrong code does not link');
+  await call('POST', '/telegram/webhook', update(42, `/start ${code}`), H);
+  assert.equal((await call('GET', '/api/state')).telegram.linked, true);
+
+  // A reminder goes to Telegram instead of web push.
+  calls.length = 0;
+  const r = await call('POST', '/api/ask');
+  assert.equal(r.telegram, true);
+  assert.deepEqual(calls.map((c) => [c.method, c.body.chat_id]), [['sendMessage', 42]]);
+
+  // Replies are logged; strangers are ignored.
+  now = new Date('2026-11-16T09:11:00Z');
+  await call('POST', '/telegram/webhook', update(99, 'I am a stranger', 5), H);
+  await call('POST', '/telegram/webhook', update(42, 'Reading email', 7), H);
+  const log = (await call('GET', '/api/state')).log;
+  assert.deepEqual(log.map((e) => [e.response, e.asked.slice(11, 16), e.answered.slice(11, 16)]), [['Reading email', '09:10', '09:11']]);
+  assert.ok(calls.some((c) => c.method === 'setMessageReaction' && c.body.message_id === 7));
+
+  // Disconnect from the app.
+  await call('DELETE', '/api/telegram');
+  assert.equal((await call('GET', '/api/state')).telegram.configured, false);
+  assert.ok(calls.some((c) => c.method === 'deleteWebhook'));
+});
