@@ -267,7 +267,7 @@ export class LoggerCore {
         const same = (e) => e.asked === m?.asked && (e.answered ?? null) === (m?.answered ?? null)
           && e.status === m?.status && e.response === (m?.response ?? '');
         const i = state.log.findLastIndex(same);
-        if (i === -1) return { error: 'That entry changed or was deleted. Pull to refresh.', status: 404 };
+        if (i === -1) return { error: 'That entry changed or was deleted, so the log was reloaded.', status: 404 };
         if (route === 'POST /api/log/delete') {
           state.log.splice(i, 1);
         } else {
