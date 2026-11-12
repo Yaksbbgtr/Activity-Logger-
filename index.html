@@ -607,7 +607,10 @@
   $('connect-btn').addEventListener('click', connect);
   $('submit').addEventListener('click', submit);
   $('response').addEventListener('input', () => store.set('al.draft', $('response').value));
-  $('response').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit(); });
+  // Return logs the entry; Shift+Return still adds a new line.
+  $('response').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
+  });
   $('test').addEventListener('click', async () => {
     $('test').disabled = true;
     try { await api('POST', '/api/ask'); await refresh(); } catch (err) { $('next').textContent = err.message; }
