@@ -147,7 +147,9 @@
   }
   body.menu-open #scrim { opacity: 1; pointer-events: auto; }
   body.menu-open #drawer { transform: none; }
+  html, body { overscroll-behavior: none; }
   body { touch-action: pan-y; }
+  #drawer { will-change: transform; }
   body.dragging #drawer, body.dragging #scrim { transition: none; }
   #drawer .eyebrow { padding: 0 12px; }
   .nav-item {
@@ -558,7 +560,9 @@
   const TITLES = { log: 'Log', schedule: 'Schedule', reminders: 'Reminders' };
   let view = 'home';
 
-  function show(next, { push = true } = {}) {
+  // Screens switch in place, without browser history: on an iPhone Home Screen app,
+  // history entries turn sideways swipes into the system's back/forward gesture.
+  function show(next) {
     view = next;
     document.querySelectorAll('[data-view]').forEach((el) => { el.hidden = el.dataset.view !== next; });
     const home = next === 'home';
@@ -569,16 +573,6 @@
       el.dataset.go === next ? el.setAttribute('aria-current', 'page') : el.removeAttribute('aria-current'));
     menu(false);
     window.scrollTo(0, 0);
-    // Keep history to at most one step: home -> a menu page. Back always returns home.
-    if (push && history.state?.view !== next) {
-      if (history.state?.view === 'home') history.pushState({ view: next }, '');
-      else history.replaceState({ view: next }, '');
-    }
-  }
-
-  function goHome() {
-    if (history.state && history.state.view !== 'home') history.back(); // popstate shows home
-    else show('home', { push: false });
   }
 
   function menu(open) {
@@ -589,53 +583,74 @@
 
   document.addEventListener('click', (e) => {
     const go = e.target.closest('[data-go]');
-    if (go) go.dataset.go === 'home' ? (menu(false), goHome()) : show(go.dataset.go);
+    if (go) show(go.dataset.go);
   });
   $('menu-btn').addEventListener('click', () => menu(!document.body.classList.contains('menu-open')));
   $('scrim').addEventListener('click', () => menu(false));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') menu(false); });
-  window.addEventListener('popstate', (e) => show(e.state?.view || 'home', { push: false }));
 
   // ---- Swipe: right to open the menu, left to close it -------------------
 
   (() => {
     const drawer = $('drawer'), scrim = $('scrim');
-    let sx = 0, sy = 0, st = 0, dx = 0, width = 0, startOpen = false, mode = null;
+    const LOCK = 10;          // px of movement before deciding the swipe's direction
+    const FLICK = 0.3;        // px/ms over the last ~100 ms that counts as a flick
+    let mode = null, startOpen = false, width = 0;
+    let x0 = 0, y0 = 0, dx = 0, samples = [], frame = 0;
     const isOpen = () => document.body.classList.contains('menu-open');
-    const follow = (offset) => { // 0 = closed, width = fully open
+
+    const paint = () => {
+      frame = 0;
+      const offset = startOpen ? width + dx : dx;             // 0 = closed, width = open
       const f = Math.max(0, Math.min(1, offset / width));
-      drawer.style.transform = `translateX(${(f - 1) * 100}%)`;
+      drawer.style.transform = `translate3d(${(f - 1) * width}px, 0, 0)`;
       scrim.style.opacity = String(f);
     };
+
     document.addEventListener('touchstart', (e) => {
-      mode = null;
-      if ($('app').hidden || e.touches.length !== 1 || e.target.closest('input, textarea')) { mode = 'off'; return; }
       const t = e.touches[0];
-      sx = t.clientX; sy = t.clientY; st = e.timeStamp; dx = 0;
-      startOpen = isOpen(); width = drawer.offsetWidth;
+      mode = ($('app').hidden || e.touches.length !== 1 || e.target.closest('input, textarea')) ? 'off' : null;
+      if (mode) return;
+      x0 = t.clientX; y0 = t.clientY; dx = 0;
+      samples = [{ x: t.clientX, t: performance.now() }];
+      startOpen = isOpen();
+      width = drawer.getBoundingClientRect().width;
     }, { passive: true });
+
     document.addEventListener('touchmove', (e) => {
-      if (mode === 'off') return;
-      const t = e.touches[0], mx = t.clientX - sx, my = t.clientY - sy;
+      if (mode === 'off' || e.touches.length !== 1) return;
+      const t = e.touches[0];
       if (mode === null) {
-        if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
-        const horizontal = Math.abs(mx) > Math.abs(my) * 1.2;
-        mode = horizontal && (startOpen ? mx < 0 : mx > 0) ? 'drag' : 'off';
-        if (mode === 'drag') { document.body.classList.add('dragging'); drawer.inert = false; }
+        const mx = t.clientX - x0, my = t.clientY - y0;
+        if (Math.hypot(mx, my) < LOCK) return;
+        const sideways = Math.abs(mx) > Math.abs(my) * 1.3;
+        if (!sideways || (startOpen ? mx > 0 : mx < 0)) { mode = 'off'; return; }
+        mode = 'drag';
+        document.body.classList.add('dragging');
+        drawer.inert = false;
       }
-      if (mode !== 'drag') return;
       e.preventDefault();
-      dx = mx;
-      follow(startOpen ? width + dx : dx);
+      dx = t.clientX - x0;
+      const now = performance.now();
+      samples.push({ x: t.clientX, t: now });
+      while (samples.length > 2 && now - samples[0].t > 100) samples.shift();
+      if (!frame) frame = requestAnimationFrame(paint);
     }, { passive: false });
-    const end = (e) => {
+
+    const end = () => {
       if (mode !== 'drag') { mode = null; return; }
-      const speed = dx / Math.max(1, e.timeStamp - st); // px per ms; a quick flick counts
-      const open = startOpen ? !(dx < -width / 3 || speed < -0.35) : (dx > width / 3 || speed > 0.35);
-      document.body.classList.remove('dragging');
-      drawer.style.transform = ''; scrim.style.opacity = '';
-      menu(open);
       mode = null;
+      if (frame) { cancelAnimationFrame(frame); frame = 0; }
+      const first = samples[0], last = samples[samples.length - 1];
+      const speed = last.t > first.t ? (last.x - first.x) / (last.t - first.t) : 0;
+      const offset = startOpen ? width + dx : dx;
+      const open = speed > FLICK ? true : speed < -FLICK ? false : offset > width / 2;
+      // Turn transitions back on before letting go, so the panel glides to its final place.
+      document.body.classList.remove('dragging');
+      void drawer.offsetWidth;
+      drawer.style.transform = '';
+      scrim.style.opacity = '';
+      menu(open);
     };
     document.addEventListener('touchend', end);
     document.addEventListener('touchcancel', end);
@@ -677,7 +692,7 @@
     store.set('al.key', null);
     key = '';
     $('menu-btn').hidden = true;
-    show('home', { push: false });
+    show('home');
     $('app').hidden = true;
     showConnect();
   });
@@ -688,8 +703,7 @@
     $('connect').hidden = true;
     $('app').hidden = false;
     $('menu-btn').hidden = false;
-    history.replaceState({ view: 'home' }, '');
-    show('home', { push: false });
+    show('home');
     $('response').value = store.get('al.draft') || '';
     await refresh();
     renderReminders();
