@@ -189,6 +189,15 @@
   .switch input:checked { background: var(--gold-soft); border-color: var(--gold-line); }
   .switch input:checked::after { transform: translateX(18px); background: var(--gold); }
 
+  /* WhatsApp */
+  #wa p { margin: 0 0 12px; }
+  #wa label.block { margin-bottom: 12px; }
+  #wa label.block input { width: 100%; font-family: ui-monospace, Menlo, monospace; font-size: 15px; }
+  .copy-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 14px; }
+  .copy-row code { flex: 1; min-width: 0; overflow-wrap: anywhere; padding: 8px 10px; font-size: .82rem; }
+  .copy-row button { flex: none; padding: 8px 14px; }
+  .note { font-size: .88rem; color: var(--muted); }
+
   footer { text-align: center; margin-top: 26px; }
   [hidden] { display: none !important; }
 </style>
@@ -247,7 +256,11 @@
         </div>
       </div>
       <div class="card">
-        <p class="eyebrow">Reply from the notification</p>
+        <p class="eyebrow">WhatsApp</p>
+        <div id="wa"></div>
+      </div>
+      <div class="card">
+        <p class="eyebrow">Telegram</p>
         <div id="tg"></div>
       </div>
       <footer><button class="quiet" id="disconnect">Disconnect this device</button></footer>
@@ -413,7 +426,7 @@
       api('POST', '/api/subscribe', { subscription: sub.toJSON() }).catch(() => {});
     } else {
       box.innerHTML = '<button class="primary" id="enable">Turn on reminders</button>';
-      $('nudge').hidden = Boolean(data.telegram?.linked);
+      $('nudge').hidden = Boolean(data.telegram?.linked || data.whatsapp?.linked);
       $('enable').addEventListener('click', enableReminders);
     }
     if (error) box.insertAdjacentHTML('beforeend', `<p class="err">${error.replace(/</g, '&lt;')}</p>`);
@@ -476,6 +489,87 @@
     if (document.activeElement?.closest?.('#windows') == null && document.activeElement !== $('interval')) renderSchedule();
     renderLog();
     renderTelegram();
+    renderWhatsApp();
+  }
+
+  // ---- WhatsApp ---------------------------------------------------------
+
+  let waShown = '';
+  function renderWhatsApp(force = false) {
+    const w = data.whatsapp || { configured: false };
+    const key = JSON.stringify(w);
+    if (!force && key === waShown) return; // don't wipe half-typed fields
+    waShown = key;
+    const box = $('wa');
+    const esc = (x) => String(x ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const save = async (fn) => { try { data.whatsapp = (await fn()).whatsapp; renderWhatsApp(true); } catch (err) { alert(err.message); } };
+
+    if (!w.configured) {
+      box.innerHTML = `
+        <p>Questions arrive as WhatsApp messages. Press and hold the notification to reply, and it’s logged here.</p>
+        <p class="note">Meta’s setup is easiest on a computer. It takes about 15 minutes, once.</p>
+        <ol class="steps">
+          <li>Go to <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener">developers.facebook.com/apps</a>, log in with Facebook and tap <strong>Create app</strong>. Choose the <strong>WhatsApp</strong> use case (“Connect with customers through WhatsApp”) and create a business portfolio if asked.</li>
+          <li>In the app, open <strong>WhatsApp → API Setup</strong>. Meta gives you a free test number. Under <strong>To</strong>, add your own WhatsApp number and enter the code it sends. Copy the <strong>Phone number ID</strong> and <strong>WhatsApp Business Account ID</strong>.</li>
+          <li>Make a token that doesn’t expire: at <a href="https://business.facebook.com/settings/system-users" target="_blank" rel="noopener">business.facebook.com → Settings → System users</a>, add a system user (Admin). <strong>Assign assets</strong>: your app and your WhatsApp account, full control. Then <strong>Generate token</strong> for your app, set it to never expire, tick <code>whatsapp_business_messaging</code> and <code>whatsapp_business_management</code>, and copy it.</li>
+          <li>Paste all three here:</li>
+        </ol>
+        <label class="block">Phone number ID<input type="text" id="wa-phone" inputmode="numeric" autocomplete="off" placeholder="1234567890…"></label>
+        <label class="block">WhatsApp Business Account ID<input type="text" id="wa-waba" inputmode="numeric" autocomplete="off" placeholder="1234567890…"></label>
+        <label class="block">Access token<input type="text" id="wa-token" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="EAAG…"></label>
+        <div class="row"><button class="primary" id="wa-save">Connect</button></div>
+        <p class="err" id="wa-msg" style="margin:10px 0 0"></p>`;
+      $('wa-save').addEventListener('click', async () => {
+        const body = { phoneNumberId: $('wa-phone').value.trim(), wabaId: $('wa-waba').value.trim(), token: $('wa-token').value.trim() };
+        if (!body.phoneNumberId || !body.token) { $('wa-msg').textContent = 'Fill in the phone number ID and the access token.'; return; }
+        $('wa-save').disabled = true; $('wa-msg').textContent = '';
+        try { data.whatsapp = (await api('POST', '/api/whatsapp', body)).whatsapp; renderWhatsApp(true); }
+        catch (err) { $('wa-msg').textContent = err.message; $('wa-save').disabled = false; }
+      });
+      return;
+    }
+
+    const copyRow = (label, value, id) => `
+      <div class="note">${label}</div>
+      <div class="copy-row"><code id="${id}">${esc(value)}</code><button data-copy="${id}">Copy</button></div>`;
+
+    if (!w.webhookVerified) {
+      box.innerHTML = `
+        <p><span class="dot"></span>Connected to Meta: <strong>${esc(w.verifiedName || 'test number')}</strong> ${esc(w.displayNumber)}</p>
+        <p><strong>Step 5:</strong> tell Meta where to send your replies. In your Meta app, open <strong>WhatsApp → Configuration</strong>. Under <strong>Webhook</strong>, tap <strong>Edit</strong> and paste these, then <strong>Verify and save</strong>:</p>
+        ${copyRow('Callback URL', w.webhookUrl, 'wa-url')}
+        ${copyRow('Verify token', w.verifyToken, 'wa-verify')}
+        <p class="note">Then under <strong>Webhook fields</strong>, tap <strong>Manage</strong> and subscribe to <strong>messages</strong>.</p>
+        <div class="row"><button id="wa-check">I’ve done this</button></div>
+        <div class="row" style="margin-top:14px"><button class="quiet danger" id="wa-remove">Remove WhatsApp</button></div>`;
+      $('wa-check').addEventListener('click', refresh);
+    } else if (!w.linked) {
+      box.innerHTML = `
+        <p><span class="dot"></span>Meta is connected to your server.</p>
+        <p><strong>Last step:</strong> tap below. WhatsApp opens with a message ready to send. Just tap <strong>Send</strong>.</p>
+        <div class="row"><a class="button" href="${esc(w.linkUrl)}" target="_blank" rel="noopener">Open WhatsApp</a>
+          <button class="quiet" id="wa-check">I’ve sent it</button></div>
+        <p class="note" style="margin-top:12px">You should get “Connected.” back. If not, check that <strong>messages</strong> is subscribed under Webhook fields in Meta.</p>
+        <div class="row" style="margin-top:6px"><button class="quiet danger" id="wa-remove">Remove WhatsApp</button></div>`;
+      $('wa-check').addEventListener('click', refresh);
+    } else {
+      const pending = w.template && w.template !== 'APPROVED';
+      box.innerHTML = `
+        <p><span class="dot"></span>Connected to WhatsApp ${esc(w.displayNumber)}</p>
+        <p class="muted" style="font-size:.92rem">Questions arrive in WhatsApp. Press and hold the notification, type, and send. It’s logged here automatically.</p>
+        ${pending ? `<p class="note">WhatsApp only allows a pre-approved message to start each day’s conversation. Until Meta approves yours (status: ${esc(w.template.toLowerCase())}), the first question of the day comes as Meta’s sample “hello world” message. Reply to it as normal.</p>` : ''}
+        <label class="switch">Also send app notifications <input type="checkbox" id="wa-push" ${w.alsoPush ? 'checked' : ''}></label>
+        <button class="quiet danger" id="wa-remove">Disconnect WhatsApp</button>`;
+      $('wa-push').addEventListener('change', (e) => save(() => api('PUT', '/api/whatsapp', { alsoPush: e.target.checked })));
+    }
+    box.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText($(b.dataset.copy).textContent); b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1500); }
+      catch { alert('Press and hold the text to copy it.'); }
+    }));
+    $('wa-remove')?.addEventListener('click', () => {
+      if (confirm('Stop sending questions to WhatsApp?')) save(() => api('DELETE', '/api/whatsapp'));
+    });
+    if (w.linked) $('nudge').hidden = true;
   }
 
   // ---- Telegram ---------------------------------------------------------

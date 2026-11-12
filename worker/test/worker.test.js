@@ -178,3 +178,71 @@ test('Telegram: setup, link, questions, replies, strangers ignored', async () =>
   assert.equal((await call('GET', '/api/state')).telegram.configured, false);
   assert.ok(calls.some((c) => c.method === 'deleteWebhook'));
 });
+
+test('WhatsApp: setup, webhook verify, link, template vs text, replies, stop', async () => {
+  const calls = [];
+  const TOKEN = 'EAAG' + 'x'.repeat(60);
+  const fetchImpl = async (url, init = {}) => {
+    if (!url.startsWith('https://graph.facebook.com/')) return new Response('', { status: 201 });
+    const path = url.replace(/^https:\/\/graph\.facebook\.com\/v[\d.]+\//, '');
+    const body = init.body ? JSON.parse(init.body) : null;
+    calls.push({ method: init.method, path, body });
+    if (init.headers?.Authorization !== `Bearer ${TOKEN}`) return Response.json({ error: { code: 190, message: 'Invalid OAuth access token' } }, { status: 401 });
+    if (path.startsWith('5550001?fields')) return Response.json({ display_phone_number: '+1 555-010-0199', verified_name: 'Test Number' });
+    if (path.startsWith('9990001/message_templates?')) return Response.json({ data: [{ name: 'activity_check', status: 'PENDING' }] });
+    return Response.json({ messages: [{ id: 'wamid.out' }] });
+  };
+  let now = new Date('2026-11-16T09:10:00Z');
+  const core = new LoggerCore(memoryStorage(), {}, { fetchImpl, clock: () => now });
+  const call = (method, path, body, headers = {}) =>
+    core.handle(new Request(`https://logger.example.dev${path}`, { method, headers, body: body && JSON.stringify(body) }));
+
+  assert.match((await call('POST', '/api/whatsapp', { phoneNumberId: 'abc', token: TOKEN })).error, /phone number ID/);
+  assert.match((await call('POST', '/api/whatsapp', { phoneNumberId: '5550001', token: 'EAAG' + 'y'.repeat(60) })).error, /isn’t valid/);
+  const { whatsapp: info } = await call('POST', '/api/whatsapp', { phoneNumberId: '5550001', wabaId: '9990001', token: TOKEN });
+  assert.equal(info.displayNumber, '+1 555-010-0199');
+  assert.equal(info.template, 'PENDING');
+  assert.ok(calls.some((c) => c.method === 'POST' && c.path === '9990001/message_templates' && c.body.name === 'activity_check'));
+  assert.equal(JSON.stringify(await call('GET', '/api/state')).includes(TOKEN), false, 'token never leaves the server');
+  const hookPath = new URL(info.webhookUrl).pathname;
+  const code = decodeURIComponent(new URL(info.linkUrl).searchParams.get('text')).replace('connect ', '');
+  assert.equal(new URL(info.linkUrl).pathname, '/15550100199');
+
+  // Webhook verification (Meta's GET handshake)
+  assert.equal((await call('GET', `${hookPath}?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=123`)).status, 403);
+  assert.equal((await call('GET', `/whatsapp/webhook/guess?hub.mode=subscribe&hub.verify_token=${info.verifyToken}&hub.challenge=123`)).status, 404);
+  assert.deepEqual(await call('GET', `${hookPath}?hub.mode=subscribe&hub.verify_token=${info.verifyToken}&hub.challenge=123`), { raw: '123' });
+  assert.equal((await call('GET', '/api/state')).whatsapp.webhookVerified, true);
+
+  const inbound = (from, text, id = 'wamid.in') => ({ object: 'whatsapp_business_account', entry: [{ changes: [{ field: 'messages',
+    value: { metadata: { phone_number_id: '5550001' }, messages: [{ from, id, type: 'text', text: { body: text } }] } }] }] });
+  await call('POST', hookPath, inbound('15559990000', 'connect wrong'));
+  assert.equal((await call('GET', '/api/state')).whatsapp.linked, false);
+  await call('POST', hookPath, inbound('15551234567', `connect ${code}`));
+  assert.equal((await call('GET', '/api/state')).whatsapp.linked, true);
+
+  // Inside the 24-hour window: plain text question.
+  calls.length = 0;
+  assert.equal((await call('POST', '/api/ask')).whatsapp, true);
+  const sent = calls.filter((c) => c.path === '5550001/messages');
+  assert.deepEqual(sent.map((c) => [c.body.to, c.body.type, c.body.text?.body]), [['15551234567', 'text', 'What are you doing right now?']]);
+
+  // Reply is logged and gets a reaction; strangers are ignored.
+  now = new Date('2026-11-16T09:12:00Z');
+  await call('POST', hookPath, inbound('15559990000', 'stranger'));
+  await call('POST', hookPath, inbound('15551234567', 'Writing a report', 'wamid.reply'));
+  assert.deepEqual((await call('GET', '/api/state')).log.map((e) => e.response), ['Writing a report']);
+  assert.ok(calls.some((c) => c.body?.type === 'reaction' && c.body.reaction.message_id === 'wamid.reply'));
+
+  // Next day, window closed, template still pending -> hello_world template.
+  now = new Date('2026-11-17T13:00:00Z');
+  calls.length = 0;
+  await call('POST', '/api/ask');
+  const t = calls.find((c) => c.path === '5550001/messages').body;
+  assert.equal(t.type, 'template');
+  assert.equal(t.template.name, 'hello_world');
+
+  // "stop" unlinks.
+  await call('POST', hookPath, inbound('15551234567', 'STOP'));
+  assert.equal((await call('GET', '/api/state')).whatsapp.linked, false);
+});

@@ -33,6 +33,12 @@ export default {
       const res = await stub(env).fetch(request);
       return new Response(null, { status: res.status === 403 ? 403 : 200 });
     }
+    // Meta calls this directly; the secret part of the path is checked by the Durable Object.
+    if (url.pathname.startsWith('/whatsapp/webhook/') && (request.method === 'GET' || request.method === 'POST')) {
+      const res = await stub(env).fetch(request);
+      if (request.method === 'GET') return res;
+      return new Response(null, { status: res.status === 404 ? 404 : 200 });
+    }
     if (!url.pathname.startsWith('/api/')) return json({ name: 'activity-logger', ok: true });
     if (!(await authorized(request, env))) return json({ error: 'Wrong or missing app key' }, 401);
     const res = await stub(env).fetch(request);
@@ -52,6 +58,7 @@ export class Logger {
 
   async fetch(request) {
     const result = await this.core.handle(request);
+    if (result.raw !== undefined) return new Response(String(result.raw), { headers: { 'Content-Type': 'text/plain' } });
     const { status = 200, ...data } = result;
     return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
   }

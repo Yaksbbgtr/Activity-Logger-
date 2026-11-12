@@ -4,6 +4,7 @@
 import { DEFAULT_SETTINGS, GRACE_MINUTES, currentSlot, sanitizeSettings } from './schedule.js';
 import { sendPush } from './webpush.js';
 import { QUESTION, Telegram, looksLikeToken, randomToken } from './telegram.js';
+import { TEMPLATE, WINDOW_MS, WhatsApp, incomingMessages } from './whatsapp.js';
 
 const MAX_LOG = 20000;
 const MAX_SUBS = 10;
@@ -22,6 +23,26 @@ export class LoggerCore {
   async subs() { return (await this.storage.get('subs')) ?? []; }
   async telegram() { return (await this.storage.get('telegram')) ?? null; }
   bot(tg) { return new Telegram(tg.token, this.fetchImpl); }
+  async whatsapp() { return (await this.storage.get('whatsapp')) ?? null; }
+  wa(w) { return new WhatsApp(w, this.fetchImpl); }
+
+  /** What the app may see about WhatsApp (never the access token). */
+  whatsappInfo(w) {
+    if (!w) return { configured: false };
+    const digits = String(w.displayNumber || '').replace(/\D/g, '');
+    return {
+      configured: true,
+      displayNumber: w.displayNumber,
+      verifiedName: w.verifiedName,
+      linked: Boolean(w.waId),
+      alsoPush: Boolean(w.alsoPush),
+      webhookUrl: `${w.origin}/whatsapp/webhook/${w.pathSecret}`,
+      verifyToken: w.verifyToken,
+      webhookVerified: Boolean(w.webhookVerified),
+      template: w.wabaId ? (w.templateStatus || 'UNKNOWN') : null,
+      linkUrl: w.waId ? null : `https://wa.me/${digits}?text=${encodeURIComponent('connect ' + w.linkCode)}`,
+    };
+  }
 
   /** What the app may see about Telegram (never the token). */
   telegramInfo(tg) {
@@ -80,13 +101,29 @@ export class LoggerCore {
   }
 
   async notifyAll(at) {
-    const tg = await this.telegram();
-    const viaTelegram = Boolean(tg?.chatId);
-    const [telegram, push] = await Promise.all([
-      viaTelegram ? this.bot(tg).send(tg.chatId, QUESTION).then(() => true, () => false) : false,
-      !viaTelegram || tg.alsoPush ? this.pushAll(at) : { sent: 0 },
+    const [tg, w] = await Promise.all([this.telegram(), this.whatsapp()]);
+    const tgOn = Boolean(tg?.chatId), waOn = Boolean(w?.waId);
+    // App notifications go out when no chat app is connected, or when asked for as well.
+    const pushToo = (!tgOn && !waOn) || (tgOn && tg.alsoPush) || (waOn && w.alsoPush);
+    const [telegram, whatsapp, push] = await Promise.all([
+      tgOn ? this.bot(tg).send(tg.chatId, QUESTION).then(() => true, () => false) : false,
+      waOn ? this.askWhatsApp(w).then(() => true, () => false) : false,
+      pushToo ? this.pushAll(at) : { sent: 0 },
     ]);
-    return { ...push, telegram };
+    return { ...push, telegram, whatsapp };
+  }
+
+  async askWhatsApp(w) {
+    const api = this.wa(w);
+    if (w.lastInbound && this.clock().getTime() - w.lastInbound < WINDOW_MS) return api.text(w.waId, QUESTION);
+    // Outside WhatsApp's 24-hour window only a pre-approved template may be sent.
+    let status = w.templateStatus;
+    if (w.wabaId && status !== 'APPROVED') {
+      status = await api.templateStatus().catch(() => status);
+      const fresh = await this.whatsapp();
+      if (fresh) { fresh.templateStatus = status; await this.storage.put('whatsapp', fresh); }
+    }
+    return api.template(w.waId, status === 'APPROVED' ? TEMPLATE : 'hello_world');
   }
 
   async pushAll(at) {
@@ -201,15 +238,108 @@ export class LoggerCore {
     return { ok: true };
   }
 
+  // ---- WhatsApp --------------------------------------------------------
+
+  async setupWhatsApp(body, origin) {
+    const token = String(body?.token ?? '').trim();
+    const phoneNumberId = String(body?.phoneNumberId ?? '').trim();
+    const wabaId = String(body?.wabaId ?? '').trim();
+    if (!/^\d{6,}$/.test(phoneNumberId)) return { error: 'The phone number ID is a long number shown under your test number in Meta’s API Setup page.', status: 400 };
+    if (wabaId && !/^\d{6,}$/.test(wabaId)) return { error: 'The WhatsApp Business Account ID is a long number shown in Meta’s API Setup page.', status: 400 };
+    if (token.length < 40 || /\s/.test(token)) return { error: 'Paste the whole access token. It’s a long string with no spaces.', status: 400 };
+    const api = new WhatsApp({ token, phoneNumberId, wabaId }, this.fetchImpl);
+    let info;
+    try { info = await api.phoneInfo(); }
+    catch (err) {
+      if (err.code === 190 || err.status === 401) return { error: 'Meta says this access token isn’t valid or has expired. Make a permanent token (step 3).', status: 400 };
+      if (err.code === 100 || err.status === 404 || err.status === 400) return { error: 'Meta couldn’t find that phone number ID with this token. Check both, and that the token has WhatsApp permissions.', status: 400 };
+      return { error: err.status ? `Meta error: ${err.message}` : `Couldn’t reach Meta: ${err.message}`, status: 502 };
+    }
+    let templateStatus = null;
+    if (wabaId) {
+      await api.createTemplate().catch(() => {}); // fine if it already exists
+      templateStatus = await api.templateStatus().catch(() => null);
+    }
+    const old = await this.whatsapp();
+    const same = old && old.phoneNumberId === phoneNumberId;
+    const w = {
+      token, phoneNumberId, wabaId: wabaId || null, origin,
+      displayNumber: info.display_phone_number, verifiedName: info.verified_name,
+      pathSecret: old?.pathSecret ?? randomToken(), verifyToken: old?.verifyToken ?? randomToken(12),
+      webhookVerified: old?.webhookVerified ?? false,
+      linkCode: randomToken(6), waId: same ? old.waId : null, lastInbound: same ? old.lastInbound : null,
+      alsoPush: old?.alsoPush ?? false, templateStatus,
+    };
+    await this.storage.put('whatsapp', w);
+    return { whatsapp: this.whatsappInfo(w) };
+  }
+
+  async updateWhatsApp(body) {
+    const w = await this.whatsapp();
+    if (!w) return { error: 'WhatsApp isn’t set up', status: 404 };
+    if (typeof body?.alsoPush === 'boolean') w.alsoPush = body.alsoPush;
+    await this.storage.put('whatsapp', w);
+    return { whatsapp: this.whatsappInfo(w) };
+  }
+
+  async removeWhatsApp() {
+    await this.storage.put('whatsapp', null);
+    return { whatsapp: this.whatsappInfo(null) };
+  }
+
+  /** Meta's webhook: GET verifies the URL, POST delivers messages. */
+  async whatsappWebhook(request, url, payload) {
+    const w = await this.whatsapp();
+    if (!w || url.pathname !== `/whatsapp/webhook/${w.pathSecret}`) return { error: 'Not found', status: 404 };
+    if (request.method === 'GET') {
+      const q = url.searchParams;
+      if (q.get('hub.mode') !== 'subscribe' || q.get('hub.verify_token') !== w.verifyToken) return { error: 'Forbidden', status: 403 };
+      w.webhookVerified = true;
+      await this.storage.put('whatsapp', w);
+      return { raw: q.get('hub.challenge') ?? '' };
+    }
+    const api = this.wa(w);
+    for (const m of incomingMessages(payload, w.phoneNumberId)) {
+      const text = m.type === 'text' ? String(m.text?.body ?? '').trim() : '';
+      if (!w.waId) {
+        const code = /^connect\s+(\S+)$/i.exec(text)?.[1];
+        if (code && code === w.linkCode) {
+          Object.assign(w, { waId: m.from, linkCode: null, lastInbound: this.clock().getTime(), webhookVerified: true });
+          await this.storage.put('whatsapp', w);
+          await api.text(m.from, 'Connected. I’ll ask what you’re doing at your scheduled times. Reply to log it: press and hold the notification and type.').catch(() => {});
+        }
+        continue;
+      }
+      if (m.from !== w.waId) continue; // not the connected person
+      w.lastInbound = this.clock().getTime(); // keeps WhatsApp's 24-hour reply window open
+      await this.storage.put('whatsapp', w);
+      if (/^stop$/i.test(text)) {
+        Object.assign(w, { waId: null, linkCode: randomToken(6) });
+        await this.storage.put('whatsapp', w);
+        await api.text(m.from, 'Disconnected from Activity Logger.').catch(() => {});
+        continue;
+      }
+      if (!text) { await api.text(m.from, 'I can only log text replies.').catch(() => {}); continue; }
+      const result = await this.answer(text);
+      if (result.ok) await api.react(m.from, m.id).catch(() => {});
+    }
+    return { ok: true };
+  }
+
   async handle(request) {
     const url = new URL(request.url);
+    if (url.pathname.startsWith('/whatsapp/webhook/')) {
+      const payload = request.method === 'POST' ? await request.json().catch(() => ({})) : null;
+      return this.whatsappWebhook(request, url, payload);
+    }
     const route = `${request.method} ${url.pathname}`;
     const body = request.method === 'GET' || request.method === 'DELETE' ? null : await request.json().catch(() => ({}));
     switch (route) {
       case 'POST /tick': return this.tick();
       case 'GET /api/state': {
         const [settings, state, subs, tg] = await Promise.all([this.settings(), this.state(), this.subs(), this.telegram()]);
-        return { settings, pending: state.pending, log: state.log, devices: subs.length, telegram: this.telegramInfo(tg) };
+        const w = await this.whatsapp();
+        return { settings, pending: state.pending, log: state.log, devices: subs.length, telegram: this.telegramInfo(tg), whatsapp: this.whatsappInfo(w) };
       }
       case 'PUT /api/settings': {
         const settings = sanitizeSettings(body);
@@ -224,6 +354,9 @@ export class LoggerCore {
       case 'PUT /api/telegram': return this.updateTelegram(body);
       case 'DELETE /api/telegram': return this.removeTelegram();
       case 'POST /telegram/webhook': return this.telegramWebhook(request, body);
+      case 'POST /api/whatsapp': return this.setupWhatsApp(body, url.origin);
+      case 'PUT /api/whatsapp': return this.updateWhatsApp(body);
+      case 'DELETE /api/whatsapp': return this.removeWhatsApp();
       case 'DELETE /api/log': {
         const state = await this.state();
         state.log = [];
