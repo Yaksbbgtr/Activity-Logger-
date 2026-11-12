@@ -500,7 +500,9 @@
         <div class="row" style="margin-top:12px"><button class="primary" id="tg-save">Connect bot</button></div>
         <p class="err" id="tg-msg" style="margin:10px 0 0"></p>`;
       $('tg-save').addEventListener('click', async () => {
-        const token = $('tg-token').value.trim();
+        // Accept BotFather's whole message too: pick out the 123456789:AA… part.
+        const raw = $('tg-token').value.trim();
+        const token = (raw.match(/\d{5,}:[A-Za-z0-9_-]{30,}/) || [raw])[0];
         if (!token) { $('tg-token').focus(); return; }
         $('tg-save').disabled = true; $('tg-msg').textContent = '';
         try { data.telegram = (await api('POST', '/api/telegram', { token })).telegram; renderTelegram(true); }
