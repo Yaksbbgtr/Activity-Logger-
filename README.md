@@ -1,1 +1,1 @@
-# FlipClock
+# Activity Logger
