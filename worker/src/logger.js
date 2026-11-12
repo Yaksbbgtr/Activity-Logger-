@@ -3,7 +3,7 @@
 
 import { DEFAULT_SETTINGS, GRACE_MINUTES, currentSlot, sanitizeSettings } from './schedule.js';
 import { sendPush } from './webpush.js';
-import { QUESTION, Telegram, looksLikeToken, randomToken } from './telegram.js';
+import { QUESTION, randomToken } from './util.js';
 import { TEMPLATE, WINDOW_MS, WhatsApp, incomingMessages } from './whatsapp.js';
 
 const MAX_LOG = 20000;
@@ -21,8 +21,6 @@ export class LoggerCore {
   async settings() { return (await this.storage.get('settings')) ?? DEFAULT_SETTINGS; }
   async state() { return (await this.storage.get('state')) ?? { pending: null, lastSlot: null, log: [] }; }
   async subs() { return (await this.storage.get('subs')) ?? []; }
-  async telegram() { return (await this.storage.get('telegram')) ?? null; }
-  bot(tg) { return new Telegram(tg.token, this.fetchImpl); }
   async whatsapp() { return (await this.storage.get('whatsapp')) ?? null; }
   wa(w) { return new WhatsApp(w, this.fetchImpl); }
 
@@ -41,18 +39,6 @@ export class LoggerCore {
       webhookVerified: Boolean(w.webhookVerified),
       template: w.wabaId ? (w.templateStatus || 'UNKNOWN') : null,
       linkUrl: w.waId ? null : `https://wa.me/${digits}?text=${encodeURIComponent('connect ' + w.linkCode)}`,
-    };
-  }
-
-  /** What the app may see about Telegram (never the token). */
-  telegramInfo(tg) {
-    if (!tg) return { configured: false };
-    return {
-      configured: true,
-      username: tg.username,
-      linked: Boolean(tg.chatId),
-      alsoPush: Boolean(tg.alsoPush),
-      linkUrl: tg.chatId ? null : `https://t.me/${tg.username}?start=${tg.linkCode}`,
     };
   }
 
@@ -101,16 +87,14 @@ export class LoggerCore {
   }
 
   async notifyAll(at) {
-    const [tg, w] = await Promise.all([this.telegram(), this.whatsapp()]);
-    const tgOn = Boolean(tg?.chatId), waOn = Boolean(w?.waId);
-    // App notifications go out when no chat app is connected, or when asked for as well.
-    const pushToo = (!tgOn && !waOn) || (tgOn && tg.alsoPush) || (waOn && w.alsoPush);
-    const [telegram, whatsapp, push] = await Promise.all([
-      tgOn ? this.bot(tg).send(tg.chatId, QUESTION).then(() => true, () => false) : false,
+    const w = await this.whatsapp();
+    const waOn = Boolean(w?.waId);
+    // App notifications go out when WhatsApp isn't connected, or when asked for as well.
+    const [whatsapp, push] = await Promise.all([
       waOn ? this.askWhatsApp(w).then(() => true, () => false) : false,
-      pushToo ? this.pushAll(at) : { sent: 0 },
+      !waOn || w.alsoPush ? this.pushAll(at) : { sent: 0 },
     ]);
-    return { ...push, telegram, whatsapp };
+    return { ...push, whatsapp };
   }
 
   async askWhatsApp(w) {
@@ -158,83 +142,6 @@ export class LoggerCore {
 
   async unsubscribe(endpoint) {
     await this.storage.put('subs', (await this.subs()).filter((s) => s.endpoint !== endpoint));
-    return { ok: true };
-  }
-
-  // ---- Telegram --------------------------------------------------------
-
-  async setupTelegram(token, origin) {
-    token = String(token ?? '').trim();
-    if (!looksLikeToken(token)) return { error: 'That doesn’t look like a bot token. It should look like 123456789:AA…', status: 400 };
-    const bot = new Telegram(token, this.fetchImpl);
-    let me;
-    try { me = await bot.getMe(); }
-    catch (err) {
-      if (err.code === 401 || err.code === 404) return { error: 'Telegram says this token isn’t valid. Copy it again from BotFather, or send /token there to get a fresh one.', status: 400 };
-      return { error: err.code ? `Telegram error: ${err.message}` : `Couldn’t reach Telegram: ${err.message}`, status: 502 };
-    }
-    const old = await this.telegram();
-    const tg = { token, username: me.username, secret: randomToken(), linkCode: randomToken(9), chatId: null, alsoPush: old?.alsoPush ?? false };
-    try { await bot.setWebhook(`${origin}/telegram/webhook`, tg.secret); }
-    catch (err) { return { error: 'Couldn’t connect the bot: ' + err.message, status: 502 }; }
-    await this.storage.put('telegram', tg);
-    return { telegram: this.telegramInfo(tg) };
-  }
-
-  async updateTelegram(body) {
-    const tg = await this.telegram();
-    if (!tg) return { error: 'Telegram isn’t set up', status: 404 };
-    if (typeof body?.alsoPush === 'boolean') tg.alsoPush = body.alsoPush;
-    await this.storage.put('telegram', tg);
-    return { telegram: this.telegramInfo(tg) };
-  }
-
-  async removeTelegram() {
-    const tg = await this.telegram();
-    if (tg) {
-      if (tg.chatId) await this.bot(tg).send(tg.chatId, 'Disconnected from Activity Logger.').catch(() => {});
-      await this.bot(tg).deleteWebhook().catch(() => {});
-      await this.storage.put('telegram', null);
-    }
-    return { telegram: this.telegramInfo(null) };
-  }
-
-  /** Messages sent to the bot. Replies are logged as answers. */
-  async telegramWebhook(request, update) {
-    const tg = await this.telegram();
-    if (!tg || request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== tg.secret) return { error: 'Forbidden', status: 403 };
-    const msg = update?.message;
-    const text = typeof msg?.text === 'string' ? msg.text.trim() : '';
-    const chatId = msg?.chat?.id;
-    if (!msg || !chatId || msg.chat.type !== 'private') return { ok: true };
-    const bot = this.bot(tg);
-
-    if (!tg.chatId) {
-      // Only someone holding the link from the app can connect.
-      const code = /^\/start\s+(\S+)$/.exec(text)?.[1];
-      if (code && code === tg.linkCode) {
-        tg.chatId = chatId;
-        tg.linkCode = null;
-        await this.storage.put('telegram', tg);
-        await bot.send(chatId, 'Connected. I’ll ask what you’re doing at your scheduled times. Reply to log it: from the notification, pull it down and type.').catch(() => {});
-      } else if (text.startsWith('/start')) {
-        await bot.send(chatId, 'To connect, open Activity Logger, go to Reminders, and tap “Open in Telegram”. That link connects this chat.').catch(() => {});
-      }
-      return { ok: true };
-    }
-    if (chatId !== tg.chatId) return { ok: true }; // a stranger found the bot: ignore
-
-    if (text === '/stop') { await this.removeTelegram(); return { ok: true }; }
-    if (text.startsWith('/')) {
-      await bot.send(chatId, 'Just reply with what you’re doing and I’ll log it. Send /stop to disconnect.').catch(() => {});
-      return { ok: true };
-    }
-    if (!text) {
-      await bot.send(chatId, 'I can only log text replies.').catch(() => {});
-      return { ok: true };
-    }
-    const result = await this.answer(text);
-    if (result.ok) await bot.react(chatId, msg.message_id).catch(() => bot.send(chatId, 'Logged ✓').catch(() => {}));
     return { ok: true };
   }
 
@@ -337,9 +244,8 @@ export class LoggerCore {
     switch (route) {
       case 'POST /tick': return this.tick();
       case 'GET /api/state': {
-        const [settings, state, subs, tg] = await Promise.all([this.settings(), this.state(), this.subs(), this.telegram()]);
-        const w = await this.whatsapp();
-        return { settings, pending: state.pending, log: state.log, devices: subs.length, telegram: this.telegramInfo(tg), whatsapp: this.whatsappInfo(w) };
+        const [settings, state, subs, w] = await Promise.all([this.settings(), this.state(), this.subs(), this.whatsapp()]);
+        return { settings, pending: state.pending, log: state.log, devices: subs.length, whatsapp: this.whatsappInfo(w) };
       }
       case 'PUT /api/settings': {
         const settings = sanitizeSettings(body);
@@ -350,10 +256,6 @@ export class LoggerCore {
       case 'POST /api/unsubscribe': return this.unsubscribe(String(body?.endpoint ?? ''));
       case 'POST /api/answer': return this.answer(body?.text);
       case 'POST /api/ask': return this.askNow();
-      case 'POST /api/telegram': return this.setupTelegram(body?.token, url.origin);
-      case 'PUT /api/telegram': return this.updateTelegram(body);
-      case 'DELETE /api/telegram': return this.removeTelegram();
-      case 'POST /telegram/webhook': return this.telegramWebhook(request, body);
       case 'POST /api/whatsapp': return this.setupWhatsApp(body, url.origin);
       case 'PUT /api/whatsapp': return this.updateWhatsApp(body);
       case 'DELETE /api/whatsapp': return this.removeWhatsApp();

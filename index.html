@@ -170,8 +170,7 @@
   #logged { font-size: .9rem; }
   .nudge { margin-top: 14px; font-size: .9rem; color: var(--muted); text-align: center; }
   .nudge button { padding: 0; border: 0; color: var(--gold); font-weight: 500; font-size: inherit; }
-  /* Telegram */
-  #tg p { margin: 0 0 12px; }
+  /* Setup steps, links and switches */
   .steps { margin: 0 0 16px; padding-left: 1.2em; color: var(--muted); font-size: .92rem; }
   .steps li { margin-bottom: 6px; padding-left: 4px; }
   .steps strong, .steps code { color: var(--text); font-weight: 500; }
@@ -258,10 +257,6 @@
       <div class="card">
         <p class="eyebrow">WhatsApp</p>
         <div id="wa"></div>
-      </div>
-      <div class="card">
-        <p class="eyebrow">Telegram</p>
-        <div id="tg"></div>
       </div>
       <footer><button class="quiet" id="disconnect">Disconnect this device</button></footer>
     </section>
@@ -426,7 +421,7 @@
       api('POST', '/api/subscribe', { subscription: sub.toJSON() }).catch(() => {});
     } else {
       box.innerHTML = '<button class="primary" id="enable">Turn on reminders</button>';
-      $('nudge').hidden = Boolean(data.telegram?.linked || data.whatsapp?.linked);
+      $('nudge').hidden = Boolean(data.whatsapp?.linked);
       $('enable').addEventListener('click', enableReminders);
     }
     if (error) box.insertAdjacentHTML('beforeend', `<p class="err">${error.replace(/</g, '&lt;')}</p>`);
@@ -488,7 +483,6 @@
     $('next').textContent = n ? dayLabel(n) : 'No upcoming reminders. Add a time frame in Schedule.';
     if (document.activeElement?.closest?.('#windows') == null && document.activeElement !== $('interval')) renderSchedule();
     renderLog();
-    renderTelegram();
     renderWhatsApp();
   }
 
@@ -570,61 +564,6 @@
       if (confirm('Stop sending questions to WhatsApp?')) save(() => api('DELETE', '/api/whatsapp'));
     });
     if (w.linked) $('nudge').hidden = true;
-  }
-
-  // ---- Telegram ---------------------------------------------------------
-
-  let tgShown = '';
-  function renderTelegram(force = false) {
-    const tg = data.telegram || { configured: false };
-    const key = JSON.stringify(tg);
-    if (!force && key === tgShown) return; // don't wipe a half-typed token
-    tgShown = key;
-    const box = $('tg');
-    const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-    if (!tg.configured) {
-      box.innerHTML = `
-        <p>iPhone only lets apps from the App Store put a reply box in notifications. Telegram has one, so questions can come from your own Telegram bot and you answer by pulling the notification down.</p>
-        <ol class="steps">
-          <li>Install <strong>Telegram</strong> and open a chat with <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>.</li>
-          <li>Send <code>/newbot</code>, then pick a name and a username ending in <strong>bot</strong>.</li>
-          <li>BotFather replies with a token. Copy it and paste it below.</li>
-        </ol>
-        <input type="text" id="tg-token" placeholder="123456789:AA…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="width:100%;font-family:ui-monospace,Menlo,monospace;font-size:15px">
-        <div class="row" style="margin-top:12px"><button class="primary" id="tg-save">Connect bot</button></div>
-        <p class="err" id="tg-msg" style="margin:10px 0 0"></p>`;
-      $('tg-save').addEventListener('click', async () => {
-        // Accept BotFather's whole message too: pick out the 123456789:AA… part.
-        const raw = $('tg-token').value.trim();
-        const token = (raw.match(/\d{5,}:[A-Za-z0-9_-]{30,}/) || [raw])[0];
-        if (!token) { $('tg-token').focus(); return; }
-        $('tg-save').disabled = true; $('tg-msg').textContent = '';
-        try { data.telegram = (await api('POST', '/api/telegram', { token })).telegram; renderTelegram(true); }
-        catch (err) { $('tg-msg').textContent = err.message; $('tg-save').disabled = false; }
-      });
-    } else if (!tg.linked) {
-      box.innerHTML = `
-        <p>Your bot <strong>@${esc(tg.username)}</strong> is ready. Last step: open it in Telegram and tap <strong>Start</strong>.</p>
-        <div class="row"><a class="button" href="${esc(tg.linkUrl)}" target="_blank" rel="noopener">Open in Telegram</a>
-          <button class="quiet" id="tg-check">I’ve tapped Start</button></div>
-        <div class="row" style="margin-top:14px"><button class="quiet danger" id="tg-remove">Remove bot</button></div>`;
-      $('tg-check').addEventListener('click', refresh);
-    } else {
-      box.innerHTML = `
-        <p><span class="dot"></span>Connected to <strong>@${esc(tg.username)}</strong></p>
-        <p class="muted" style="font-size:.92rem">Questions arrive in Telegram. Pull the notification down, type, and send. It’s logged here automatically.</p>
-        <label class="switch">Also send app notifications <input type="checkbox" id="tg-push" ${tg.alsoPush ? 'checked' : ''}></label>
-        <button class="quiet danger" id="tg-remove">Disconnect Telegram</button>`;
-      $('tg-push').addEventListener('change', async (e) => {
-        try { data.telegram = (await api('PUT', '/api/telegram', { alsoPush: e.target.checked })).telegram; tgShown = JSON.stringify(data.telegram); }
-        catch (err) { e.target.checked = !e.target.checked; alert(err.message); }
-      });
-    }
-    $('tg-remove')?.addEventListener('click', async () => {
-      if (!confirm('Stop sending questions to Telegram?')) return;
-      try { data.telegram = (await api('DELETE', '/api/telegram')).telegram; renderTelegram(true); } catch (err) { alert(err.message); }
-    });
-    if (tg.linked) $('nudge').hidden = true;
   }
 
   function dayLabel(d) {
