@@ -2,23 +2,29 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Activity Logger</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Activity">
+<meta name="theme-color" content="#2f6fed">
 <style>
   :root {
     --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #667085;
-    --border: #d9dde5; --accent: #2f6fed; --accent-text: #fff; --warn: #b42318;
+    --border: #d9dde5; --accent: #2f6fed; --accent-text: #fff; --warn: #b42318; --ok: #067647;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #12151b; --card: #1b2029; --text: #e7eaf0; --muted: #98a2b3;
-      --border: #2d3442; --accent: #5b8cff; --accent-text: #0b1020; --warn: #f97066;
+      --border: #2d3442; --accent: #5b8cff; --accent-text: #0b1020; --warn: #f97066; --ok: #47cd89;
     }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
   main { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
   h1 { margin: 0 0 4px; font-size: 1.6rem; }
@@ -26,30 +32,35 @@
   .sub { color: var(--muted); margin: 0 0 20px; }
   .card {
     background: var(--card); border: 1px solid var(--border);
-    border-radius: 10px; padding: 16px; margin-bottom: 16px;
+    border-radius: 12px; padding: 16px; margin-bottom: 16px;
   }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   button {
-    font: inherit; padding: 7px 14px; border-radius: 7px; cursor: pointer;
+    font: inherit; padding: 8px 14px; border-radius: 8px; cursor: pointer;
     border: 1px solid var(--border); background: var(--card); color: var(--text);
   }
+  button:disabled { opacity: .6; cursor: default; }
   button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
   button.danger { color: var(--warn); }
-  input, textarea, select {
+  input, textarea {
     font: inherit; color: var(--text); background: var(--bg);
-    border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px;
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; max-width: 100%;
   }
-  textarea { width: 100%; min-height: 80px; resize: vertical; }
+  input[type=text], input[type=url], input[type=password] { width: 100%; }
+  textarea { width: 100%; min-height: 90px; resize: vertical; }
+  label.block { display: block; margin-bottom: 10px; }
   .status { font-weight: 600; }
   .muted { color: var(--muted); }
+  .ok { color: var(--ok); }
+  .err { color: var(--warn); }
   .window { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
-            padding: 8px 0; border-bottom: 1px solid var(--border); }
-  .days label { font-size: 0.85rem; margin-right: 4px; white-space: nowrap; }
+            padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .days label { font-size: 0.85rem; margin-right: 6px; white-space: nowrap; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
   th { color: var(--muted); font-weight: 600; }
   td.resp { white-space: pre-wrap; word-break: break-word; }
-  .missed { color: var(--warn); }
+  td.missed { color: var(--warn); }
   .table-wrap { overflow-x: auto; }
   #prompt { border: 2px solid var(--accent); }
   [hidden] { display: none !important; }
@@ -58,225 +69,288 @@
 <body>
 <main>
   <h1>Activity Logger</h1>
-  <p class="sub">Asks what you're doing at a set interval during your chosen hours and logs each answer with a timestamp.</p>
+  <p class="sub">Reminds you at a set interval during your chosen hours, even when the app is closed, and logs each answer with a timestamp.</p>
 
-  <section class="card" id="prompt" hidden>
-    <h2>What are you doing right now?</h2>
-    <p class="muted" id="prompt-time"></p>
-    <textarea id="response" placeholder="Type your answer…"></textarea>
-    <div class="row" style="margin-top:8px">
-      <button class="primary" id="submit">Log it</button>
-      <span class="muted">Ctrl/⌘ + Enter to submit</span>
-    </div>
+  <!-- Shown until the app knows its server and key -->
+  <section class="card" id="connect" hidden>
+    <h2>Connect</h2>
+    <label class="block">Server address
+      <input type="url" id="server" placeholder="https://activity-logger.example.workers.dev" autocomplete="off">
+    </label>
+    <label class="block">App key
+      <input type="password" id="key" autocomplete="off">
+    </label>
+    <div class="row"><button class="primary" id="connect-btn">Connect</button><span id="connect-msg" class="err"></span></div>
   </section>
 
-  <section class="card">
-    <div class="row" style="justify-content:space-between">
-      <div>
-        <div class="status" id="status">Loading…</div>
-        <div class="muted" id="next"></div>
+  <div id="app" hidden>
+    <section class="card" id="prompt" hidden>
+      <h2>What are you doing right now?</h2>
+      <p class="muted" id="prompt-time"></p>
+      <textarea id="response" placeholder="Type your answer…" enterkeyhint="send"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" id="submit">Log it</button>
+        <span id="submit-msg" class="err"></span>
       </div>
-      <div class="row">
-        <button id="notify-btn">Enable notifications</button>
+    </section>
+
+    <section class="card">
+      <div class="status" id="status">Loading…</div>
+      <div class="muted" id="next"></div>
+      <div id="reminders" style="margin-top:12px"></div>
+      <div class="row" style="margin-top:12px">
         <button id="test">Ask me now</button>
+        <button id="refresh">Refresh</button>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <section class="card">
-    <h2>Schedule</h2>
-    <div class="row">
-      <label>Ask every <input id="interval" type="number" min="1" max="240" style="width:70px"> minutes</label>
-    </div>
-    <div id="windows"></div>
-    <div class="row" style="margin-top:10px">
-      <button id="add-window">+ Add time frame</button>
-    </div>
-  </section>
-
-  <section class="card">
-    <div class="row" style="justify-content:space-between; margin-bottom:8px">
-      <h2 style="margin:0">Log</h2>
+    <section class="card">
+      <h2>Schedule</h2>
       <div class="row">
-        <button id="export">Export CSV</button>
-        <button class="danger" id="clear">Clear log</button>
+        <label>Ask every <input id="interval" type="number" inputmode="numeric" min="1" max="240" style="width:72px"> minutes</label>
       </div>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Asked</th><th>Answered</th><th>Response</th></tr></thead>
-        <tbody id="log"></tbody>
-      </table>
-    </div>
-    <p class="muted" id="empty">No entries yet.</p>
-  </section>
+      <div id="windows"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="add-window">+ Add time frame</button>
+        <span class="muted" id="saved"></span>
+      </div>
+    </section>
 
-  <p class="muted">Keep this tab open: the browser can only remind you while the page is running. Your data stays in this browser.</p>
+    <section class="card">
+      <div class="row" style="justify-content:space-between; margin-bottom:8px">
+        <h2 style="margin:0">Log</h2>
+        <div class="row">
+          <button id="export">Export CSV</button>
+          <button class="danger" id="clear">Clear log</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Asked</th><th>Answered</th><th>Response</th></tr></thead>
+          <tbody id="log"></tbody>
+        </table>
+      </div>
+      <p class="muted" id="empty">No entries yet.</p>
+    </section>
+
+    <p class="muted"><button id="disconnect">Disconnect this device</button></p>
+  </div>
 </main>
 
+<script src="config.js"></script>
 <script>
 (() => {
   const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const GRACE_MS = 2 * 60 * 1000; // fire a slot only if we notice it within 2 min
-  const KEYS = { settings: 'al.settings', log: 'al.log', pending: 'al.pending', lastSlot: 'al.lastSlot' };
-
-  const load = (k, fallback) => {
-    try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; }
-    catch { return fallback; }
-  };
-  const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
-
-  let settings = load(KEYS.settings, {
-    interval: 10,
-    windows: [{ start: '09:00', end: '17:00', days: [1, 2, 3, 4, 5] }],
-  });
-  let log = load(KEYS.log, []);
-  let pending = load(KEYS.pending, null); // { asked: ISO }
-  let lastSlot = load(KEYS.lastSlot, null);
-  let activeNotification = null;
-
   const $ = (id) => document.getElementById(id);
+  const store = {
+    get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+    set: (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
+  };
+  const fmt = (iso) => (iso ? new Date(iso).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '');
   const toMin = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
-  const fmt = (iso) => iso ? new Date(iso).toLocaleString() : '';
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const installed = window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  const pushSupported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 
-  // ---- Scheduling -------------------------------------------------------
+  let server = (store.get('al.server') || window.ACTIVITY_LOGGER_SERVER || '').replace(/\/+$/, '');
+  let key = store.get('al.key') || '';
+  let data = { settings: null, pending: null, log: [], devices: 0 };
+  let swReg = null;
 
-  // All prompt times for a given calendar day, ascending.
-  function slotsForDay(day) {
-    const out = [];
-    const interval = Math.max(1, Number(settings.interval) || 10);
-    for (const w of settings.windows) {
-      if (!w.start || !w.end || !w.days.includes(day.getDay())) continue;
-      const s = toMin(w.start), e = toMin(w.end);
-      for (let m = s; m <= e; m += interval) {
-        const t = new Date(day);
-        t.setHours(0, m, 0, 0);
-        out.push(t);
+  // ---- Server ------------------------------------------------------------
+
+  async function api(method, path, body) {
+    const res = await fetch(server + path, {
+      method,
+      headers: { Authorization: 'Bearer ' + key, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(json.error || `Server error ${res.status}`), { status: res.status });
+    return json;
+  }
+
+  async function refresh() {
+    try {
+      data = await api('GET', '/api/state');
+      // Keep the server's time zone in step with this device.
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (tz && data.settings.timezone !== tz) {
+        data.settings = (await api('PUT', '/api/settings', { ...data.settings, timezone: tz })).settings;
       }
+      render();
+    } catch (err) {
+      if (err.status === 401) { showConnect('That app key was not accepted.'); return; }
+      $('status').textContent = 'Can’t reach the server';
+      $('next').textContent = err.message;
     }
-    return out.sort((a, b) => a - b);
   }
 
-  function currentSlot(now) {
-    const today = new Date(now); today.setHours(0, 0, 0, 0);
-    const past = slotsForDay(today).filter((t) => t <= now);
-    return past.length ? past[past.length - 1] : null;
+  // ---- Connect ----------------------------------------------------------
+
+  function showConnect(msg = '') {
+    $('connect').hidden = false;
+    $('app').hidden = true;
+    $('server').value = server;
+    $('connect-msg').textContent = msg;
   }
 
-  function nextSlot(now) {
+  async function connect() {
+    server = $('server').value.trim().replace(/\/+$/, '');
+    key = $('key').value.trim();
+    if (!server || !key) { $('connect-msg').textContent = 'Enter both fields.'; return; }
+    $('connect-btn').disabled = true;
+    try {
+      await api('GET', '/api/state');
+      store.set('al.server', server);
+      store.set('al.key', key);
+      start();
+    } catch (err) {
+      $('connect-msg').textContent = err.status === 401 ? 'That app key was not accepted.' : 'Could not reach that server.';
+    } finally {
+      $('connect-btn').disabled = false;
+    }
+  }
+
+  // ---- Push reminders ---------------------------------------------------
+
+  async function currentSubscription() {
+    if (!pushSupported) return null;
+    swReg = swReg || await navigator.serviceWorker.register('sw.js');
+    await navigator.serviceWorker.ready;
+    return swReg.pushManager.getSubscription();
+  }
+
+  async function enableReminders() {
+    const btn = $('enable');
+    btn.disabled = true;
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') { renderReminders('Notifications were not allowed. You can allow them in Settings.'); return; }
+      const { key: vapidKey } = await api('GET', '/api/vapid-key');
+      if (!vapidKey) throw new Error('Server has no push key configured.');
+      await currentSubscription();
+      const sub = await swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKey });
+      await api('POST', '/api/subscribe', { subscription: sub.toJSON() });
+      await refresh();
+      renderReminders();
+    } catch (err) {
+      renderReminders('Could not turn on reminders: ' + err.message);
+    } finally {
+      btn && (btn.disabled = false);
+    }
+  }
+
+  async function renderReminders(error = '') {
+    const box = $('reminders');
+    if (!pushSupported || (isIOS && !installed)) {
+      box.innerHTML = isIOS
+        ? '<strong>To get reminders on iPhone:</strong> tap the Share button, choose <em>Add to Home Screen</em>, then open Activity Logger from your Home Screen and turn reminders on there.'
+        : 'This browser can’t receive reminders while the app is closed. Try Chrome, Edge, Firefox or Safari.';
+      return;
+    }
+    const sub = await currentSubscription().catch(() => null);
+    if (sub && Notification.permission === 'granted') {
+      box.innerHTML = '<span class="ok">✓ Reminders are on for this device.</span>';
+      // Re-send in case the browser rotated the subscription.
+      api('POST', '/api/subscribe', { subscription: sub.toJSON() }).catch(() => {});
+    } else {
+      box.innerHTML = '<button class="primary" id="enable">Turn on reminders</button>';
+      $('enable').addEventListener('click', enableReminders);
+    }
+    if (error) box.insertAdjacentHTML('beforeend', `<p class="err">${error.replace(/</g, '&lt;')}</p>`);
+  }
+
+  // ---- Answering --------------------------------------------------------
+
+  async function submit() {
+    const text = $('response').value.trim();
+    if (!text) { $('response').focus(); return; }
+    $('submit').disabled = true;
+    $('submit-msg').textContent = '';
+    try {
+      await api('POST', '/api/answer', { text });
+      $('response').value = '';
+      store.set('al.draft', null);
+      await refresh();
+    } catch (err) {
+      $('submit-msg').textContent = err.status === 409 ? 'That question already closed. Your text is still here.' : err.message;
+    } finally {
+      $('submit').disabled = false;
+    }
+  }
+
+  // ---- Rendering --------------------------------------------------------
+
+  function nextPrompt(settings, now) {
     const day = new Date(now); day.setHours(0, 0, 0, 0);
     for (let i = 0; i < 8; i++) {
-      const found = slotsForDay(day).find((t) => t > now);
+      const times = [];
+      for (const w of settings.windows) {
+        if (!w.days.includes(day.getDay())) continue;
+        for (let m = toMin(w.start); m <= toMin(w.end); m += settings.interval) {
+          const t = new Date(day); t.setHours(0, m, 0, 0); times.push(t);
+        }
+      }
+      const found = times.sort((a, b) => a - b).find((t) => t > now);
       if (found) return found;
       day.setDate(day.getDate() + 1);
     }
     return null;
   }
 
-  function tick() {
-    const now = new Date();
-    const slot = currentSlot(now);
-    if (slot) {
-      const key = slot.toISOString();
-      if (key !== lastSlot && now - slot < GRACE_MS) {
-        lastSlot = key;
-        save(KEYS.lastSlot, lastSlot);
-        ask(slot);
-      }
-    }
-    renderStatus(now);
-  }
-
-  // ---- Prompting --------------------------------------------------------
-
-  function ask(when = new Date()) {
-    // An unanswered earlier prompt is logged as missed before asking again.
-    if (pending) addEntry({ asked: pending.asked, answered: null, response: '', status: 'missed' });
-    pending = { asked: when.toISOString() };
-    save(KEYS.pending, pending);
-    showPrompt();
-    notify();
-  }
-
-  function showPrompt() {
+  function render() {
+    const { settings, pending } = data;
     $('prompt').hidden = !pending;
-    if (!pending) return;
-    $('prompt-time').textContent = 'Asked at ' + fmt(pending.asked);
-    $('response').focus();
-  }
-
-  function notify() {
-    if (!('Notification' in window) || Notification.permission !== 'granted') return;
-    try {
-      activeNotification?.close();
-      activeNotification = new Notification('Activity Logger', {
-        body: 'What are you doing right now?',
-        tag: 'activity-logger',
-        requireInteraction: true,
-      });
-      activeNotification.onclick = () => { window.focus(); $('response').focus(); activeNotification.close(); };
-    } catch {}
-  }
-
-  function submit() {
-    if (!pending) return;
-    const text = $('response').value.trim();
-    if (!text) { $('response').focus(); return; }
-    addEntry({ asked: pending.asked, answered: new Date().toISOString(), response: text, status: 'answered' });
-    pending = null;
-    save(KEYS.pending, null);
-    $('response').value = '';
-    activeNotification?.close();
-    showPrompt();
-  }
-
-  function addEntry(entry) {
-    log.push(entry);
-    save(KEYS.log, log);
+    if (pending) $('prompt-time').textContent = 'Asked ' + fmt(pending.asked);
+    $('status').textContent = pending ? 'Waiting for your answer' : 'All caught up';
+    const n = nextPrompt(settings, new Date());
+    $('next').textContent = n
+      ? 'Next reminder: ' + n.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+      : 'No upcoming reminders. Add a time frame below.';
+    if (document.activeElement?.closest?.('#windows') == null && document.activeElement !== $('interval')) renderSchedule();
     renderLog();
   }
 
-  // ---- Rendering --------------------------------------------------------
-
-  function renderStatus(now) {
-    const active = settings.windows.some((w) =>
-      w.days.includes(now.getDay()) &&
-      toMin(w.start) <= now.getHours() * 60 + now.getMinutes() &&
-      now.getHours() * 60 + now.getMinutes() <= toMin(w.end));
-    $('status').textContent = pending ? 'Waiting for your answer'
-      : active ? 'Active — inside a time frame' : 'Idle — outside your time frames';
-    const n = nextSlot(now);
-    $('next').textContent = n ? 'Next prompt: ' + n.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : 'No upcoming prompts — add a time frame.';
-
-    const btn = $('notify-btn');
-    if (!('Notification' in window)) { btn.textContent = 'Notifications unsupported'; btn.disabled = true; }
-    else if (Notification.permission === 'granted') { btn.textContent = 'Notifications on'; btn.disabled = true; }
-    else if (Notification.permission === 'denied') { btn.textContent = 'Notifications blocked'; btn.disabled = true; }
+  let saveTimer = null;
+  function saveSettings() {
+    clearTimeout(saveTimer);
+    $('saved').textContent = 'Saving…';
+    saveTimer = setTimeout(async () => {
+      try {
+        data.settings = (await api('PUT', '/api/settings', {
+          ...data.settings, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        })).settings;
+        $('saved').textContent = 'Saved';
+        render();
+      } catch (err) { $('saved').textContent = 'Not saved: ' + err.message; }
+    }, 500);
   }
 
-  function renderWindows() {
-    $('interval').value = settings.interval;
+  function renderSchedule() {
+    const s = data.settings;
+    $('interval').value = s.interval;
     const box = $('windows');
     box.innerHTML = '';
-    settings.windows.forEach((w, i) => {
+    s.windows.forEach((w, i) => {
       const row = document.createElement('div');
       row.className = 'window';
       row.innerHTML = `
         <input type="time" data-f="start" value="${w.start}"> to
         <input type="time" data-f="end" value="${w.end}">
         <span class="days">${DAY_NAMES.map((d, di) =>
-          `<label><input type="checkbox" data-day="${di}" ${w.days.includes(di) ? 'checked' : ''}>${d}</label>`).join('')}</span>
+          `<label><input type="checkbox" data-day="${di}" ${w.days.includes(di) ? 'checked' : ''}> ${d}</label>`).join('')}</span>
         <button class="danger" data-remove>Remove</button>`;
       row.querySelectorAll('input[type=time]').forEach((el) =>
-        el.addEventListener('change', () => { w[el.dataset.f] = el.value; persist(); }));
+        el.addEventListener('change', () => { if (el.value) { w[el.dataset.f] = el.value; saveSettings(); } }));
       row.querySelectorAll('input[data-day]').forEach((el) =>
         el.addEventListener('change', () => {
           const d = Number(el.dataset.day);
-          w.days = el.checked ? [...new Set([...w.days, d])] : w.days.filter((x) => x !== d);
-          persist();
+          w.days = el.checked ? [...new Set([...w.days, d])].sort() : w.days.filter((x) => x !== d);
+          saveSettings();
         }));
       row.querySelector('[data-remove]').addEventListener('click', () => {
-        settings.windows.splice(i, 1); persist(); renderWindows();
+        s.windows.splice(i, 1); renderSchedule(); saveSettings();
       });
       box.appendChild(row);
     });
@@ -285,10 +359,9 @@
   function renderLog() {
     const body = $('log');
     body.innerHTML = '';
-    [...log].reverse().forEach((e) => {
+    [...data.log].reverse().forEach((e) => {
       const tr = document.createElement('tr');
-      const cells = [fmt(e.asked), e.status === 'missed' ? 'Missed' : fmt(e.answered), e.response];
-      cells.forEach((c, ci) => {
+      [fmt(e.asked), e.status === 'missed' ? 'Missed' : fmt(e.answered), e.response].forEach((c, ci) => {
         const td = document.createElement('td');
         td.textContent = c;
         if (ci === 2) td.className = 'resp';
@@ -297,55 +370,68 @@
       });
       body.appendChild(tr);
     });
-    $('empty').hidden = log.length > 0;
+    $('empty').hidden = data.log.length > 0;
   }
-
-  function persist() { save(KEYS.settings, settings); renderStatus(new Date()); }
-
-  // ---- Export -----------------------------------------------------------
 
   function exportCsv() {
     const esc = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`;
     const rows = [['asked', 'answered', 'status', 'response']]
-      .concat(log.map((e) => [e.asked, e.answered ?? '', e.status, e.response]));
-    const csv = rows.map((r) => r.map(esc).join(',')).join('\n');
+      .concat(data.log.map((e) => [e.asked, e.answered ?? '', e.status, e.response]));
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.href = URL.createObjectURL(new Blob([rows.map((r) => r.map(esc).join(',')).join('\n')], { type: 'text/csv' }));
     a.download = `activity-log-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
-    URL.revokeObjectURL(a.href);
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
   // ---- Wiring -----------------------------------------------------------
 
+  $('connect-btn').addEventListener('click', connect);
   $('submit').addEventListener('click', submit);
-  $('response').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit();
+  $('response').addEventListener('input', () => store.set('al.draft', $('response').value));
+  $('response').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit(); });
+  $('test').addEventListener('click', async () => {
+    $('test').disabled = true;
+    try { await api('POST', '/api/ask'); await refresh(); } catch (err) { $('next').textContent = err.message; }
+    $('test').disabled = false;
   });
-  $('test').addEventListener('click', () => ask());
-  $('notify-btn').addEventListener('click', async () => {
-    await Notification.requestPermission();
-    renderStatus(new Date());
-  });
+  $('refresh').addEventListener('click', refresh);
   $('interval').addEventListener('change', (e) => {
-    settings.interval = Math.min(240, Math.max(1, Number(e.target.value) || 10));
-    e.target.value = settings.interval;
-    persist();
+    data.settings.interval = Math.min(240, Math.max(1, Number(e.target.value) || 10));
+    e.target.value = data.settings.interval;
+    saveSettings();
   });
   $('add-window').addEventListener('click', () => {
-    settings.windows.push({ start: '09:00', end: '17:00', days: [1, 2, 3, 4, 5] });
-    persist(); renderWindows();
+    data.settings.windows.push({ start: '09:00', end: '17:00', days: [1, 2, 3, 4, 5] });
+    renderSchedule(); saveSettings();
   });
   $('export').addEventListener('click', exportCsv);
-  $('clear').addEventListener('click', () => {
-    if (confirm('Delete every log entry? This cannot be undone.')) { log = []; save(KEYS.log, log); renderLog(); }
+  $('clear').addEventListener('click', async () => {
+    if (!confirm('Delete every log entry? This cannot be undone.')) return;
+    try { await api('DELETE', '/api/log'); await refresh(); } catch (err) { alert(err.message); }
   });
+  $('disconnect').addEventListener('click', async () => {
+    if (!confirm('Stop reminders on this device and forget the app key?')) return;
+    const sub = await currentSubscription().catch(() => null);
+    if (sub) { await api('POST', '/api/unsubscribe', { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe(); }
+    store.set('al.key', null);
+    key = '';
+    showConnect();
+  });
+  navigator.serviceWorker?.addEventListener('message', (e) => { if (e.data === 'refresh') refresh(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && key) refresh(); });
 
-  renderWindows();
-  renderLog();
-  showPrompt();
-  tick();
-  setInterval(tick, 15 * 1000);
+  async function start() {
+    $('connect').hidden = true;
+    $('app').hidden = false;
+    $('response').value = store.get('al.draft') || '';
+    await refresh();
+    renderReminders();
+    if (data.pending && new URLSearchParams(location.search).has('answer')) $('response').focus();
+    setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, 60 * 1000);
+  }
+
+  if (server && key) start(); else showConnect();
 })();
 </script>
 </body>

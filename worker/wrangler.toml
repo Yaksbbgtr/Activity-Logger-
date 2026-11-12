@@ -1,0 +1,23 @@
+name = "activity-logger"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# Runs every minute; the worker decides whether a reminder is due.
+[triggers]
+crons = ["* * * * *"]
+
+# One Durable Object holds settings, the open prompt and the log.
+[[durable_objects.bindings]]
+name = "LOGGER"
+class_name = "Logger"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Logger"]
+
+# Secrets (set with `npx wrangler secret put NAME`, never committed):
+#   APP_KEY            password the app uses to talk to this worker
+#   VAPID_PUBLIC_KEY   from `npm run vapid`
+#   VAPID_PRIVATE_KEY  from `npm run vapid`
+[vars]
+VAPID_SUBJECT = "https://yaksbbgtr.github.io"

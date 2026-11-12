@@ -1,0 +1,15 @@
+{
+  "name": "activity-logger-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.js",
+    "vapid": "node scripts/gen-vapid.mjs"
+  },
+  "devDependencies": {
+    "http_ece": "1.2.1",
+    "wrangler": "4.160.1"
+  }
+}
