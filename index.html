@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Activity Logger</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #667085;
+    --border: #d9dde5; --accent: #2f6fed; --accent-text: #fff; --warn: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e7eaf0; --muted: #98a2b3;
+      --border: #2d3442; --accent: #5b8cff; --accent-text: #0b1020; --warn: #f97066;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { margin: 0 0 4px; font-size: 1.6rem; }
+  h2 { margin: 0 0 12px; font-size: 1.1rem; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; margin-bottom: 16px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button {
+    font: inherit; padding: 7px 14px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+  }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button.danger { color: var(--warn); }
+  input, textarea, select {
+    font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px;
+  }
+  textarea { width: 100%; min-height: 80px; resize: vertical; }
+  .status { font-weight: 600; }
+  .muted { color: var(--muted); }
+  .window { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+            padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .days label { font-size: 0.85rem; margin-right: 4px; white-space: nowrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  td.resp { white-space: pre-wrap; word-break: break-word; }
+  .missed { color: var(--warn); }
+  .table-wrap { overflow-x: auto; }
+  #prompt { border: 2px solid var(--accent); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Activity Logger</h1>
+  <p class="sub">Asks what you're doing at a set interval during your chosen hours and logs each answer with a timestamp.</p>
+
+  <section class="card" id="prompt" hidden>
+    <h2>What are you doing right now?</h2>
+    <p class="muted" id="prompt-time"></p>
+    <textarea id="response" placeholder="Type your answer…"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="primary" id="submit">Log it</button>
+      <span class="muted">Ctrl/⌘ + Enter to submit</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row" style="justify-content:space-between">
+      <div>
+        <div class="status" id="status">Loading…</div>
+        <div class="muted" id="next"></div>
+      </div>
+      <div class="row">
+        <button id="notify-btn">Enable notifications</button>
+        <button id="test">Ask me now</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Schedule</h2>
+    <div class="row">
+      <label>Ask every <input id="interval" type="number" min="1" max="240" style="width:70px"> minutes</label>
+    </div>
+    <div id="windows"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="add-window">+ Add time frame</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row" style="justify-content:space-between; margin-bottom:8px">
+      <h2 style="margin:0">Log</h2>
+      <div class="row">
+        <button id="export">Export CSV</button>
+        <button class="danger" id="clear">Clear log</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Asked</th><th>Answered</th><th>Response</th></tr></thead>
+        <tbody id="log"></tbody>
+      </table>
+    </div>
+    <p class="muted" id="empty">No entries yet.</p>
+  </section>
+
+  <p class="muted">Keep this tab open: the browser can only remind you while the page is running. Your data stays in this browser.</p>
+</main>
+
+<script>
+(() => {
+  const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const GRACE_MS = 2 * 60 * 1000; // fire a slot only if we notice it within 2 min
+  const KEYS = { settings: 'al.settings', log: 'al.log', pending: 'al.pending', lastSlot: 'al.lastSlot' };
+
+  const load = (k, fallback) => {
+    try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; }
+    catch { return fallback; }
+  };
+  const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+
+  let settings = load(KEYS.settings, {
+    interval: 10,
+    windows: [{ start: '09:00', end: '17:00', days: [1, 2, 3, 4, 5] }],
+  });
+  let log = load(KEYS.log, []);
+  let pending = load(KEYS.pending, null); // { asked: ISO }
+  let lastSlot = load(KEYS.lastSlot, null);
+  let activeNotification = null;
+
+  const $ = (id) => document.getElementById(id);
+  const toMin = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
+  const fmt = (iso) => iso ? new Date(iso).toLocaleString() : '';
+
+  // ---- Scheduling -------------------------------------------------------
+
+  // All prompt times for a given calendar day, ascending.
+  function slotsForDay(day) {
+    const out = [];
+    const interval = Math.max(1, Number(settings.interval) || 10);
+    for (const w of settings.windows) {
+      if (!w.start || !w.end || !w.days.includes(day.getDay())) continue;
+      const s = toMin(w.start), e = toMin(w.end);
+      for (let m = s; m <= e; m += interval) {
+        const t = new Date(day);
+        t.setHours(0, m, 0, 0);
+        out.push(t);
+      }
+    }
+    return out.sort((a, b) => a - b);
+  }
+
+  function currentSlot(now) {
+    const today = new Date(now); today.setHours(0, 0, 0, 0);
+    const past = slotsForDay(today).filter((t) => t <= now);
+    return past.length ? past[past.length - 1] : null;
+  }
+
+  function nextSlot(now) {
+    const day = new Date(now); day.setHours(0, 0, 0, 0);
+    for (let i = 0; i < 8; i++) {
+      const found = slotsForDay(day).find((t) => t > now);
+      if (found) return found;
+      day.setDate(day.getDate() + 1);
+    }
+    return null;
+  }
+
+  function tick() {
+    const now = new Date();
+    const slot = currentSlot(now);
+    if (slot) {
+      const key = slot.toISOString();
+      if (key !== lastSlot && now - slot < GRACE_MS) {
+        lastSlot = key;
+        save(KEYS.lastSlot, lastSlot);
+        ask(slot);
+      }
+    }
+    renderStatus(now);
+  }
+
+  // ---- Prompting --------------------------------------------------------
+
+  function ask(when = new Date()) {
+    // An unanswered earlier prompt is logged as missed before asking again.
+    if (pending) addEntry({ asked: pending.asked, answered: null, response: '', status: 'missed' });
+    pending = { asked: when.toISOString() };
+    save(KEYS.pending, pending);
+    showPrompt();
+    notify();
+  }
+
+  function showPrompt() {
+    $('prompt').hidden = !pending;
+    if (!pending) return;
+    $('prompt-time').textContent = 'Asked at ' + fmt(pending.asked);
+    $('response').focus();
+  }
+
+  function notify() {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    try {
+      activeNotification?.close();
+      activeNotification = new Notification('Activity Logger', {
+        body: 'What are you doing right now?',
+        tag: 'activity-logger',
+        requireInteraction: true,
+      });
+      activeNotification.onclick = () => { window.focus(); $('response').focus(); activeNotification.close(); };
+    } catch {}
+  }
+
+  function submit() {
+    if (!pending) return;
+    const text = $('response').value.trim();
+    if (!text) { $('response').focus(); return; }
+    addEntry({ asked: pending.asked, answered: new Date().toISOString(), response: text, status: 'answered' });
+    pending = null;
+    save(KEYS.pending, null);
+    $('response').value = '';
+    activeNotification?.close();
+    showPrompt();
+  }
+
+  function addEntry(entry) {
+    log.push(entry);
+    save(KEYS.log, log);
+    renderLog();
+  }
+
+  // ---- Rendering --------------------------------------------------------
+
+  function renderStatus(now) {
+    const active = settings.windows.some((w) =>
+      w.days.includes(now.getDay()) &&
+      toMin(w.start) <= now.getHours() * 60 + now.getMinutes() &&
+      now.getHours() * 60 + now.getMinutes() <= toMin(w.end));
+    $('status').textContent = pending ? 'Waiting for your answer'
+      : active ? 'Active — inside a time frame' : 'Idle — outside your time frames';
+    const n = nextSlot(now);
+    $('next').textContent = n ? 'Next prompt: ' + n.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : 'No upcoming prompts — add a time frame.';
+
+    const btn = $('notify-btn');
+    if (!('Notification' in window)) { btn.textContent = 'Notifications unsupported'; btn.disabled = true; }
+    else if (Notification.permission === 'granted') { btn.textContent = 'Notifications on'; btn.disabled = true; }
+    else if (Notification.permission === 'denied') { btn.textContent = 'Notifications blocked'; btn.disabled = true; }
+  }
+
+  function renderWindows() {
+    $('interval').value = settings.interval;
+    const box = $('windows');
+    box.innerHTML = '';
+    settings.windows.forEach((w, i) => {
+      const row = document.createElement('div');
+      row.className = 'window';
+      row.innerHTML = `
+        <input type="time" data-f="start" value="${w.start}"> to
+        <input type="time" data-f="end" value="${w.end}">
+        <span class="days">${DAY_NAMES.map((d, di) =>
+          `<label><input type="checkbox" data-day="${di}" ${w.days.includes(di) ? 'checked' : ''}>${d}</label>`).join('')}</span>
+        <button class="danger" data-remove>Remove</button>`;
+      row.querySelectorAll('input[type=time]').forEach((el) =>
+        el.addEventListener('change', () => { w[el.dataset.f] = el.value; persist(); }));
+      row.querySelectorAll('input[data-day]').forEach((el) =>
+        el.addEventListener('change', () => {
+          const d = Number(el.dataset.day);
+          w.days = el.checked ? [...new Set([...w.days, d])] : w.days.filter((x) => x !== d);
+          persist();
+        }));
+      row.querySelector('[data-remove]').addEventListener('click', () => {
+        settings.windows.splice(i, 1); persist(); renderWindows();
+      });
+      box.appendChild(row);
+    });
+  }
+
+  function renderLog() {
+    const body = $('log');
+    body.innerHTML = '';
+    [...log].reverse().forEach((e) => {
+      const tr = document.createElement('tr');
+      const cells = [fmt(e.asked), e.status === 'missed' ? 'Missed' : fmt(e.answered), e.response];
+      cells.forEach((c, ci) => {
+        const td = document.createElement('td');
+        td.textContent = c;
+        if (ci === 2) td.className = 'resp';
+        if (ci === 1 && e.status === 'missed') td.className = 'missed';
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+    $('empty').hidden = log.length > 0;
+  }
+
+  function persist() { save(KEYS.settings, settings); renderStatus(new Date()); }
+
+  // ---- Export -----------------------------------------------------------
+
+  function exportCsv() {
+    const esc = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`;
+    const rows = [['asked', 'answered', 'status', 'response']]
+      .concat(log.map((e) => [e.asked, e.answered ?? '', e.status, e.response]));
+    const csv = rows.map((r) => r.map(esc).join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `activity-log-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  // ---- Wiring -----------------------------------------------------------
+
+  $('submit').addEventListener('click', submit);
+  $('response').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit();
+  });
+  $('test').addEventListener('click', () => ask());
+  $('notify-btn').addEventListener('click', async () => {
+    await Notification.requestPermission();
+    renderStatus(new Date());
+  });
+  $('interval').addEventListener('change', (e) => {
+    settings.interval = Math.min(240, Math.max(1, Number(e.target.value) || 10));
+    e.target.value = settings.interval;
+    persist();
+  });
+  $('add-window').addEventListener('click', () => {
+    settings.windows.push({ start: '09:00', end: '17:00', days: [1, 2, 3, 4, 5] });
+    persist(); renderWindows();
+  });
+  $('export').addEventListener('click', exportCsv);
+  $('clear').addEventListener('click', () => {
+    if (confirm('Delete every log entry? This cannot be undone.')) { log = []; save(KEYS.log, log); renderLog(); }
+  });
+
+  renderWindows();
+  renderLog();
+  showPrompt();
+  tick();
+  setInterval(tick, 15 * 1000);
+})();
+</script>
+</body>
+</html>
