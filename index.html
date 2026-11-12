@@ -74,7 +74,7 @@
   <!-- Shown until the app knows its server and key -->
   <section class="card" id="connect" hidden>
     <h2>Connect</h2>
-    <label class="block">Server address
+    <label class="block" id="server-field">Server address
       <input type="url" id="server" placeholder="https://activity-logger.example.workers.dev" autocomplete="off">
     </label>
     <label class="block">App key
@@ -137,7 +137,7 @@
   </div>
 </main>
 
-<script src="config.js"></script>
+<script src="config.js?v=2"></script>
 <script>
 (() => {
   const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -152,7 +152,8 @@
   const installed = window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
   const pushSupported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 
-  let server = (store.get('al.server') || window.ACTIVITY_LOGGER_SERVER || '').replace(/\/+$/, '');
+  const DEFAULT_SERVER = window.ACTIVITY_LOGGER_SERVER || 'https://activity-logger.activity-logger-worker.workers.dev';
+  let server = (store.get('al.server') || DEFAULT_SERVER).replace(/\/+$/, '');
   let key = store.get('al.key') || '';
   let data = { settings: null, pending: null, log: [], devices: 0 };
   let swReg = null;
@@ -192,13 +193,14 @@
     $('connect').hidden = false;
     $('app').hidden = true;
     $('server').value = server;
+    $('server-field').hidden = Boolean(server);
     $('connect-msg').textContent = msg;
   }
 
   async function connect() {
-    server = $('server').value.trim().replace(/\/+$/, '');
+    server = ($('server').value.trim() || DEFAULT_SERVER).replace(/\/+$/, '');
     key = $('key').value.trim();
-    if (!server || !key) { $('connect-msg').textContent = 'Enter both fields.'; return; }
+    if (!key) { $('connect-msg').textContent = 'Enter your app key.'; return; }
     $('connect-btn').disabled = true;
     try {
       await api('GET', '/api/state');
@@ -206,7 +208,7 @@
       store.set('al.key', key);
       start();
     } catch (err) {
-      $('connect-msg').textContent = err.status === 401 ? 'That app key was not accepted.' : 'Could not reach that server.';
+      $('connect-msg').textContent = err.status === 401 ? 'That app key was not accepted.' : 'Could not reach the server. Check your connection and try again.';
     } finally {
       $('connect-btn').disabled = false;
     }
