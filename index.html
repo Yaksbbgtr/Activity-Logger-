@@ -147,6 +147,8 @@
   }
   body.menu-open #scrim { opacity: 1; pointer-events: auto; }
   body.menu-open #drawer { transform: none; }
+  body { touch-action: pan-y; }
+  body.dragging #drawer, body.dragging #scrim { transition: none; }
   #drawer .eyebrow { padding: 0 12px; }
   .nav-item {
     display: flex; align-items: center; gap: 14px; width: 100%; text-align: left;
@@ -593,6 +595,51 @@
   $('scrim').addEventListener('click', () => menu(false));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') menu(false); });
   window.addEventListener('popstate', (e) => show(e.state?.view || 'home', { push: false }));
+
+  // ---- Swipe: right to open the menu, left to close it -------------------
+
+  (() => {
+    const drawer = $('drawer'), scrim = $('scrim');
+    let sx = 0, sy = 0, st = 0, dx = 0, width = 0, startOpen = false, mode = null;
+    const isOpen = () => document.body.classList.contains('menu-open');
+    const follow = (offset) => { // 0 = closed, width = fully open
+      const f = Math.max(0, Math.min(1, offset / width));
+      drawer.style.transform = `translateX(${(f - 1) * 100}%)`;
+      scrim.style.opacity = String(f);
+    };
+    document.addEventListener('touchstart', (e) => {
+      mode = null;
+      if ($('app').hidden || e.touches.length !== 1 || e.target.closest('input, textarea')) { mode = 'off'; return; }
+      const t = e.touches[0];
+      sx = t.clientX; sy = t.clientY; st = e.timeStamp; dx = 0;
+      startOpen = isOpen(); width = drawer.offsetWidth;
+    }, { passive: true });
+    document.addEventListener('touchmove', (e) => {
+      if (mode === 'off') return;
+      const t = e.touches[0], mx = t.clientX - sx, my = t.clientY - sy;
+      if (mode === null) {
+        if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
+        const horizontal = Math.abs(mx) > Math.abs(my) * 1.2;
+        mode = horizontal && (startOpen ? mx < 0 : mx > 0) ? 'drag' : 'off';
+        if (mode === 'drag') { document.body.classList.add('dragging'); drawer.inert = false; }
+      }
+      if (mode !== 'drag') return;
+      e.preventDefault();
+      dx = mx;
+      follow(startOpen ? width + dx : dx);
+    }, { passive: false });
+    const end = (e) => {
+      if (mode !== 'drag') { mode = null; return; }
+      const speed = dx / Math.max(1, e.timeStamp - st); // px per ms; a quick flick counts
+      const open = startOpen ? !(dx < -width / 3 || speed < -0.35) : (dx > width / 3 || speed > 0.35);
+      document.body.classList.remove('dragging');
+      drawer.style.transform = ''; scrim.style.opacity = '';
+      menu(open);
+      mode = null;
+    };
+    document.addEventListener('touchend', end);
+    document.addEventListener('touchcancel', end);
+  })();
 
   // ---- Wiring -----------------------------------------------------------
 
