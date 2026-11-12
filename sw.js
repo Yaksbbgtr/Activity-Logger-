@@ -31,3 +31,11 @@ self.addEventListener('notificationclick', (e) => {
     return self.clients.openWindow(url);
   })());
 });
+
+// Always check for the newest version of the app's own files, so updates
+// show up the next time it opens instead of after the browser cache expires.
+self.addEventListener('fetch', (e) => {
+  const req = e.request;
+  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  e.respondWith(fetch(req, { cache: 'no-cache' }).catch(() => fetch(req)));
+});
