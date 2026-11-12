@@ -206,6 +206,23 @@
   .copy-row button { flex: none; padding: 8px 14px; }
   .note { font-size: .88rem; color: var(--muted); }
 
+  /* Select mode */
+  .entry.selectable { cursor: pointer; margin: 0 -10px; padding-left: 10px; padding-right: 10px; border-radius: 12px; }
+  .entry.selected { background: var(--gold-soft); }
+  .check { width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--line-strong); margin-top: 1px;
+    display: inline-flex; align-items: center; justify-content: center; color: var(--on-gold); font-size: .8rem; }
+  .entry.selected .check { background: var(--gold); border-color: var(--gold); }
+  #sel-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+    background: var(--surface); border-top: 1px solid var(--line);
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    box-shadow: 0 -12px 30px rgba(0,0,0,.35);
+  }
+  #sel-bar > * { max-width: 620px; margin-left: auto; margin-right: auto; }
+  .sel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+  #sel-text { min-height: 72px; margin-bottom: 6px; }
+  body.selecting main { padding-bottom: 200px; }
+
   footer { text-align: center; margin-top: 26px; }
   [hidden] { display: none !important; }
 </style>
@@ -287,8 +304,10 @@
         <div class="row spread" style="margin-bottom:6px">
           <p class="eyebrow" style="margin:0">Entries</p>
           <div class="row" style="gap:18px">
+            <button class="quiet" id="select">Select</button>
             <button class="quiet" id="export">Export</button>
             <button class="quiet danger" id="clear">Clear</button>
+            <button class="quiet" id="select-done" hidden style="color:var(--gold)">Done</button>
           </div>
         </div>
         <div id="log"></div>
@@ -297,6 +316,25 @@
     </section>
   </div>
 </main>
+
+<div id="sel-bar" hidden>
+  <div class="sel-head">
+    <div><strong id="sel-count">0 selected</strong><div class="note" id="sel-range"></div></div>
+    <button class="quiet" id="sel-fill" hidden>Fill in between</button>
+  </div>
+  <div id="sel-edit" hidden>
+    <textarea id="sel-text" enterkeyhint="done" placeholder="What were you doing?"></textarea>
+    <div class="err" id="sel-msg"></div>
+  </div>
+  <div class="row" id="sel-actions">
+    <button class="primary" id="sel-edit-btn" disabled>Edit</button>
+    <button id="sel-delete" disabled>Delete</button>
+  </div>
+  <div class="row" id="sel-save-row" hidden>
+    <button class="primary" id="sel-save">Save</button>
+    <button id="sel-cancel">Cancel</button>
+  </div>
+</div>
 
 <div id="scrim"></div>
 <nav id="drawer" aria-label="Menu" inert>
@@ -732,11 +770,113 @@
         }
       });
       actions.append(edit, del);
+      if (selecting) {
+        row.classList.add('selectable');
+        row.classList.toggle('selected', selected.has(e.asked));
+        const check = document.createElement('span');
+        check.className = 'check';
+        check.textContent = selected.has(e.asked) ? '✓' : '';
+        row.append(t, body, check);
+        row.addEventListener('click', () => { selected.has(e.asked) ? selected.delete(e.asked) : selected.add(e.asked); renderLog(true); });
+        box.appendChild(row);
+        return;
+      }
       row.append(t, body, actions);
       box.appendChild(row);
     });
     $('empty').hidden = data.log.length > 0;
+    if (selecting) renderSelBar();
   }
+
+  // ---- Select several entries, e.g. one activity over a longer stretch ---
+
+  let selecting = false;
+  const selected = new Set(); // entries are keyed by when they were asked
+
+  function setSelecting(on) {
+    selecting = on;
+    selected.clear();
+    document.body.classList.toggle('selecting', on);
+    $('select').hidden = $('export').hidden = $('clear').hidden = on;
+    $('select-done').hidden = !on;
+    $('sel-bar').hidden = !on;
+    closeSelEdit();
+    renderLog(true);
+  }
+
+  const chosen = () => data.log.filter((e) => selected.has(e.asked));
+  const clock = (d) => new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+  function renderSelBar() {
+    const list = chosen().sort((a, b) => a.asked.localeCompare(b.asked));
+    // Forget selections whose entries disappeared after a refresh.
+    for (const k of [...selected]) if (!data.log.some((e) => e.asked === k)) selected.delete(k);
+    const n = list.length;
+    $('sel-count').textContent = n ? `${n} selected` : 'Tap entries to select them';
+    const first = list[0], last = list[n - 1];
+    $('sel-range').textContent = n > 1
+      ? `${dayLabel(new Date(first.asked))}, ${clock(first.asked)} – ${clock(last.asked)}`
+      : n === 1 ? `${dayLabel(new Date(first.asked))}, ${clock(first.asked)}` : '';
+    const gaps = n > 1 && data.log.some((e) => e.asked > first.asked && e.asked < last.asked && !selected.has(e.asked));
+    $('sel-fill').hidden = !gaps;
+    $('sel-edit-btn').disabled = $('sel-delete').disabled = n === 0;
+  }
+
+  function closeSelEdit() {
+    if (editing === 'many') editing = null;
+    $('sel-edit').hidden = $('sel-save-row').hidden = true;
+    $('sel-actions').hidden = false;
+    $('sel-msg').textContent = '';
+  }
+
+  const matchOf = (e) => ({ asked: e.asked, answered: e.answered ?? null, status: e.status, response: e.response });
+
+  $('select').addEventListener('click', () => setSelecting(true));
+  $('select-done').addEventListener('click', () => setSelecting(false));
+  $('sel-fill').addEventListener('click', () => {
+    const list = chosen().map((e) => e.asked).sort();
+    const [a, b] = [list[0], list[list.length - 1]];
+    data.log.forEach((e) => { if (e.asked >= a && e.asked <= b) selected.add(e.asked); });
+    renderLog(true);
+  });
+  $('sel-edit-btn').addEventListener('click', () => {
+    const list = chosen();
+    const same = list.every((e) => e.response === list[0].response) ? list[0].response : '';
+    editing = 'many';
+    $('sel-text').value = same;
+    $('sel-text').placeholder = list.length > 1 ? `What were you doing ${$('sel-range').textContent.split(', ').pop()}?` : 'What were you doing?';
+    $('sel-edit').hidden = $('sel-save-row').hidden = false;
+    $('sel-actions').hidden = true;
+    $('sel-text').focus();
+  });
+  $('sel-cancel').addEventListener('click', closeSelEdit);
+  const saveMany = async () => {
+    const text = $('sel-text').value.trim();
+    if (!text) { $('sel-msg').textContent = 'Type something, or use Delete instead.'; return; }
+    $('sel-save').disabled = true;
+    try {
+      const r = await api('POST', '/api/log/edit-many', { entries: chosen().map(matchOf), text });
+      data.log = r.log;
+      setSelecting(false);
+      render();
+    } catch (err) { $('sel-msg').textContent = err.message; }
+    finally { $('sel-save').disabled = false; }
+  };
+  $('sel-save').addEventListener('click', saveMany);
+  $('sel-text').addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); saveMany(); }
+    if (ev.key === 'Escape') closeSelEdit();
+  });
+  $('sel-delete').addEventListener('click', async () => {
+    const n = selected.size;
+    if (!confirm(`Delete ${n} ${n === 1 ? 'entry' : 'entries'}? This can’t be undone.`)) return;
+    try {
+      const r = await api('POST', '/api/log/delete-many', { entries: chosen().map(matchOf) });
+      data.log = r.log;
+      setSelecting(false);
+      render();
+    } catch (err) { alert(err.message); }
+  });
 
   function exportCsv() {
     const esc = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`;
@@ -758,6 +898,7 @@
   // history entries turn sideways swipes into the system's back/forward gesture.
   function show(next) {
     view = next;
+    if (selecting && next !== 'log') setSelecting(false);
     if (editing) { editing = null; renderLog(true); } // leaving mid-edit cancels it
     document.querySelectorAll('[data-view]').forEach((el) => { el.hidden = el.dataset.view !== next; });
     const home = next === 'home';

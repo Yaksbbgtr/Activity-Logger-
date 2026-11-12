@@ -214,3 +214,25 @@ test('deleting one log entry', async () => {
   const filled = (await call('POST', '/api/log/edit', { entry: missed, text: 'Lunch' })).entry;
   assert.deepEqual([filled.status, filled.response, filled.answered], ['answered', 'Lunch', null]);
 });
+
+test('editing and deleting several entries at once', async () => {
+  let now = new Date('2026-11-16T14:00:00Z');
+  const core = new LoggerCore(memoryStorage(), {}, { clock: () => now });
+  const call = (method, path, body) => core.handle(new Request(`https://x${path}`, { method, body: body && JSON.stringify(body) }));
+  for (let i = 0; i < 5; i++) { await call('POST', '/api/ask'); now = new Date(now.getTime() + 600000); }
+  await call('POST', '/api/answer', { text: 'Back at desk' });
+  const log = (await call('GET', '/api/state')).log; // 4 missed (14:00-14:30) + 1 answered (14:40)
+  assert.equal(log.filter((e) => e.status === 'missed').length, 4);
+  const span = log.slice(0, 3);
+  const r = await call('POST', '/api/log/edit-many', { entries: span, text: ' Team meeting ' });
+  assert.deepEqual([r.changed, r.missing], [3, 0]);
+  assert.deepEqual(r.log.map((e) => [e.asked.slice(11, 16), e.status, e.response]), [
+    ['14:00', 'answered', 'Team meeting'], ['14:10', 'answered', 'Team meeting'], ['14:20', 'answered', 'Team meeting'],
+    ['14:30', 'missed', ''], ['14:40', 'answered', 'Back at desk'],
+  ]);
+  // Stale copies don't match; empty text is refused.
+  assert.equal((await call('POST', '/api/log/edit-many', { entries: span, text: 'x' })).changed, 0);
+  assert.equal((await call('POST', '/api/log/edit-many', { entries: r.log.slice(0, 1), text: '  ' })).status, 400);
+  const d = await call('POST', '/api/log/delete-many', { entries: r.log.slice(1, 4) });
+  assert.deepEqual(d.log.map((e) => e.asked.slice(11, 16)), ['14:00', '14:40']);
+});

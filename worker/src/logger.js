@@ -279,6 +279,27 @@ export class LoggerCore {
         await this.storage.put('state', state);
         return route === 'POST /api/log/edit' ? { entry: state.log[i] } : { ok: true };
       }
+      case 'POST /api/log/edit-many':
+      case 'POST /api/log/delete-many': {
+        // Several entries at once, e.g. one activity that spanned a stretch of time.
+        const wanted = Array.isArray(body?.entries) ? body.entries.slice(0, 500) : [];
+        if (!wanted.length) return { error: 'Nothing selected', status: 400 };
+        const editMany = route === 'POST /api/log/edit-many';
+        const text = String(body?.text ?? '').trim().slice(0, MAX_ANSWER);
+        if (editMany && !text) return { error: 'Type something, or delete the entries instead', status: 400 };
+        const state = await this.state();
+        const key = (e) => JSON.stringify([e?.asked, e?.answered ?? null, e?.status, e?.response ?? '']);
+        const keys = new Set(wanted.map(key));
+        const edited = this.clock().toISOString();
+        let changed = 0;
+        if (editMany) {
+          state.log = state.log.map((e) => (keys.has(key(e)) ? (changed++, { ...e, response: text, status: 'answered', edited }) : e));
+        } else {
+          state.log = state.log.filter((e) => (keys.has(key(e)) ? (changed++, false) : true));
+        }
+        await this.storage.put('state', state);
+        return { changed, missing: wanted.length - changed, log: state.log };
+      }
       case 'DELETE /api/log': {
         const state = await this.state();
         state.log = [];
