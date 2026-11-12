@@ -102,13 +102,15 @@ test('full flow: reminder, answer, missed prompt, dead subscription pruned', asy
 
   now = new Date('2026-11-16T09:12:00Z');
   assert.deepEqual(await call('POST', '/api/answer', { text: '  writing code ' }), { ok: true });
-  assert.equal((await call('POST', '/api/answer', { text: 'again' })).status, 409);
+  now = new Date('2026-11-16T09:15:00Z');
+  assert.deepEqual(await call('POST', '/api/answer', { text: 'coffee' }), { ok: true }, 'logging without a question');
 
   now = new Date('2026-11-16T09:20:00Z'); await call('POST', '/tick'); // left unanswered
   now = new Date('2026-11-16T09:30:00Z'); await call('POST', '/tick');
   const st = await call('GET', '/api/state');
   assert.deepEqual(st.log.map((e) => [e.asked.slice(11, 16), e.status, e.response]), [
     ['09:10', 'answered', 'writing code'],
+    ['09:15', 'answered', 'coffee'],
     ['09:20', 'missed', ''],
   ]);
   assert.equal(st.pending.asked, '2026-11-16T09:30:00.000Z');

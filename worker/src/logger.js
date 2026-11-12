@@ -56,8 +56,9 @@ export class LoggerCore {
     text = String(text ?? '').trim().slice(0, MAX_ANSWER);
     if (!text) return { error: 'Answer is empty', status: 400 };
     const state = await this.state();
-    if (!state.pending) return { error: 'Nothing to answer', status: 409 };
-    this.addLog(state, { asked: state.pending.asked, answered: this.clock().toISOString(), response: text, status: 'answered' });
+    const now = this.clock().toISOString();
+    // With no open question, the entry is logged on its own (asked = answered = now).
+    this.addLog(state, { asked: state.pending?.asked ?? now, answered: now, response: text, status: 'answered' });
     state.pending = null;
     await this.storage.put('state', state);
     return { ok: true };
