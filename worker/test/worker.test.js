@@ -199,4 +199,18 @@ test('deleting one log entry', async () => {
   assert.deepEqual(await call('POST', '/api/log/delete', two), { ok: true });
   assert.deepEqual((await call('GET', '/api/state')).log.map((e) => e.response), ['one', 'three']);
   assert.equal((await call('POST', '/api/log/delete', two)).status, 404);
+
+  // Editing
+  const [one] = (await call('GET', '/api/state')).log;
+  const { entry } = await call('POST', '/api/log/edit', { entry: one, text: '  one, edited ' });
+  assert.equal(entry.response, 'one, edited');
+  assert.ok(entry.edited);
+  assert.equal((await call('POST', '/api/log/edit', { entry: one, text: 'stale' })).status, 404, 'old copy no longer matches');
+  assert.equal((await call('POST', '/api/log/edit', { entry, text: '   ' })).status, 400);
+
+  // A missed entry becomes answered once filled in.
+  await call('POST', '/api/ask'); await call('POST', '/api/ask');
+  const missed = (await call('GET', '/api/state')).log.find((e) => e.status === 'missed');
+  const filled = (await call('POST', '/api/log/edit', { entry: missed, text: 'Lunch' })).entry;
+  assert.deepEqual([filled.status, filled.response, filled.answered], ['answered', 'Lunch', null]);
 });

@@ -259,16 +259,25 @@ export class LoggerCore {
       case 'POST /api/whatsapp': return this.setupWhatsApp(body, url.origin);
       case 'PUT /api/whatsapp': return this.updateWhatsApp(body);
       case 'DELETE /api/whatsapp': return this.removeWhatsApp();
-      case 'POST /api/log/delete': {
+      case 'POST /api/log/delete':
+      case 'POST /api/log/edit': {
         // Entries have no IDs; match on the exact times, status and text.
         const state = await this.state();
-        const same = (e) => e.asked === body?.asked && (e.answered ?? null) === (body?.answered ?? null)
-          && e.status === body?.status && e.response === (body?.response ?? '');
+        const m = body?.entry ?? body;
+        const same = (e) => e.asked === m?.asked && (e.answered ?? null) === (m?.answered ?? null)
+          && e.status === m?.status && e.response === (m?.response ?? '');
         const i = state.log.findLastIndex(same);
-        if (i === -1) return { error: 'That entry is already gone', status: 404 };
-        state.log.splice(i, 1);
+        if (i === -1) return { error: 'That entry changed or was deleted. Pull to refresh.', status: 404 };
+        if (route === 'POST /api/log/delete') {
+          state.log.splice(i, 1);
+        } else {
+          const text = String(body?.text ?? '').trim().slice(0, MAX_ANSWER);
+          if (!text) return { error: 'Type something, or delete the entry instead', status: 400 };
+          // Editing a missed entry fills in what you were doing then.
+          state.log[i] = { ...state.log[i], response: text, status: 'answered', edited: this.clock().toISOString() };
+        }
         await this.storage.put('state', state);
-        return { ok: true };
+        return route === 'POST /api/log/edit' ? { entry: state.log[i] } : { ok: true };
       }
       case 'DELETE /api/log': {
         const state = await this.state();

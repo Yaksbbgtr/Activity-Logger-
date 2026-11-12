@@ -131,9 +131,15 @@
   .entry time { color: var(--muted); font-size: .88rem; font-variant-numeric: tabular-nums; padding-top: 1px; }
   .entry .text { white-space: pre-wrap; word-break: break-word; }
   .entry .meta { font-size: .78rem; color: var(--faint); margin-top: 2px; }
-  .entry .del { width: 32px; height: 32px; margin: -5px -6px 0 0; padding: 0; border: 0; border-radius: 50%;
+  .entry .actions { display: flex; gap: 2px; margin: -6px -8px 0 0; }
+  .entry .act { width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
     color: var(--faint); font-size: 1.25rem; line-height: 1; }
-  .entry .del:active { background: var(--field); color: var(--warn); }
+  .entry .act svg { width: 17px; height: 17px; }
+  .entry .act:active { background: var(--field); color: var(--gold); }
+  .entry .del:active { color: var(--warn); }
+  .entry.editing { grid-template-columns: 74px 1fr; }
+  .edit-box { min-height: 84px; font-size: 16px; }
   .entry.missed .text { color: var(--warn); font-style: italic; opacity: .85; }
   #empty { margin: 4px 0 0; font-size: .92rem; }
 
@@ -625,10 +631,14 @@
     });
   }
 
-  function renderLog() {
+  let editing = null; // the entry being edited; background refreshes leave the log alone meanwhile
+
+  function renderLog(force = false) {
+    if (editing && !force) return;
     const box = $('log');
     box.innerHTML = '';
     const time = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const match = (e) => ({ asked: e.asked, answered: e.answered ?? null, status: e.status, response: e.response });
     let lastDay = null;
     [...data.log].reverse().forEach((e) => {
       const day = dayLabel(new Date(e.asked));
@@ -646,15 +656,67 @@
       text.className = 'text';
       text.textContent = e.status === 'missed' ? 'Missed' : e.response;
       body.appendChild(text);
-      if (e.status !== 'missed' && e.answered) {
-        const mins = Math.round((new Date(e.answered) - new Date(e.asked)) / 60000);
+      const metaText = e.edited ? (e.answered ? `Answered at ${time(e.answered)} · edited` : 'Filled in later')
+        : e.status !== 'missed' && e.answered
+          ? (Math.round((new Date(e.answered) - new Date(e.asked)) / 60000) < 1 ? 'Answered right away' : `Answered at ${time(e.answered)}`)
+          : '';
+      if (metaText) {
         const meta = document.createElement('div');
-        meta.className = 'meta';
-        meta.textContent = mins < 1 ? 'Answered right away' : `Answered at ${time(e.answered)}`;
-        body.appendChild(meta);
+        meta.className = 'meta'; meta.textContent = metaText; body.appendChild(meta);
       }
+
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const edit = document.createElement('button');
+      edit.className = 'act';
+      edit.setAttribute('aria-label', 'Edit this entry');
+      edit.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10-10-4-4L4 16v4z"/><path d="M13 7l4 4"/></svg>';
+      edit.addEventListener('click', () => {
+        editing = e;
+        row.classList.add('editing');
+        const area = document.createElement('textarea');
+        area.className = 'edit-box';
+        area.value = e.status === 'missed' ? '' : e.response;
+        area.placeholder = e.status === 'missed' ? 'What were you doing?' : '';
+        area.setAttribute('enterkeyhint', 'done');
+        const btns = document.createElement('div');
+        btns.className = 'row'; btns.style.marginTop = '8px';
+        btns.innerHTML = '<button class="primary">Save</button><button>Cancel</button>';
+        const [save, cancel] = btns.querySelectorAll('button');
+        const msg = document.createElement('div'); msg.className = 'err';
+        body.replaceChildren(area, btns, msg);
+        actions.hidden = true;
+        area.focus();
+        area.setSelectionRange(area.value.length, area.value.length);
+        const close = () => { editing = null; renderLog(true); };
+        cancel.addEventListener('click', close);
+        const doSave = async () => {
+          const value = area.value.trim();
+          if (!value) { msg.textContent = 'Type something, or use × to delete the entry.'; return; }
+          if (value === e.response && e.status !== 'missed') { close(); return; }
+          save.disabled = true;
+          try {
+            const { entry } = await api('POST', '/api/log/edit', { entry: match(e), text: value });
+            // A background refresh may have replaced the list meanwhile, so find the entry by its time.
+            const i = data.log.findIndex((x) => x.asked === entry.asked);
+            if (i !== -1) data.log[i] = entry;
+            close();
+            if (i === -1) refresh();
+          } catch (err) {
+            save.disabled = false;
+            msg.textContent = err.message;
+            if (err.status === 404) { editing = null; refresh(); }
+          }
+        };
+        save.addEventListener('click', doSave);
+        area.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); doSave(); }
+          if (ev.key === 'Escape') close();
+        });
+      });
+
       const del = document.createElement('button');
-      del.className = 'del';
+      del.className = 'act del';
       del.textContent = '×';
       del.setAttribute('aria-label', 'Delete this entry');
       del.addEventListener('click', async () => {
@@ -662,14 +724,15 @@
         if (!confirm(`Delete ${what} from ${time(e.asked)}?`)) return;
         del.disabled = true;
         try {
-          await api('POST', '/api/log/delete', { asked: e.asked, answered: e.answered ?? null, status: e.status, response: e.response });
+          await api('POST', '/api/log/delete', match(e));
           data.log = data.log.filter((x) => x !== e);
-          renderLog();
+          renderLog(true);
         } catch (err) {
           if (err.status === 404) refresh(); else { alert(err.message); del.disabled = false; }
         }
       });
-      row.append(t, body, del);
+      actions.append(edit, del);
+      row.append(t, body, actions);
       box.appendChild(row);
     });
     $('empty').hidden = data.log.length > 0;
@@ -695,6 +758,7 @@
   // history entries turn sideways swipes into the system's back/forward gesture.
   function show(next) {
     view = next;
+    if (editing) { editing = null; renderLog(true); } // leaving mid-edit cancels it
     document.querySelectorAll('[data-view]').forEach((el) => { el.hidden = el.dataset.view !== next; });
     const home = next === 'home';
     $('brand-text').hidden = !home;
