@@ -180,6 +180,8 @@ export class LoggerCore {
         tg.linkCode = null;
         await this.storage.put('telegram', tg);
         await bot.send(chatId, 'Connected. I’ll ask what you’re doing at your scheduled times. Reply to log it: from the notification, pull it down and type.').catch(() => {});
+      } else if (text.startsWith('/start')) {
+        await bot.send(chatId, 'To connect, open Activity Logger, go to Reminders, and tap “Open in Telegram”. That link connects this chat.').catch(() => {});
       }
       return { ok: true };
     }
