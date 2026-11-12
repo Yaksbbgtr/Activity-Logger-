@@ -10,7 +10,7 @@ const MAX_SUBS = 10;
 const MAX_ANSWER = 2000;
 
 export class LoggerCore {
-  constructor(storage, env, { fetchImpl = fetch, clock = () => new Date() } = {}) {
+  constructor(storage, env, { fetchImpl = (...args) => fetch(...args), clock = () => new Date() } = {}) {
     this.storage = storage;
     this.env = env;
     this.fetchImpl = fetchImpl;
@@ -131,7 +131,11 @@ export class LoggerCore {
     if (!looksLikeToken(token)) return { error: 'That doesn’t look like a bot token. It should look like 123456789:AA…', status: 400 };
     const bot = new Telegram(token, this.fetchImpl);
     let me;
-    try { me = await bot.getMe(); } catch { return { error: 'Telegram didn’t accept that token. Copy it again from BotFather.', status: 400 }; }
+    try { me = await bot.getMe(); }
+    catch (err) {
+      if (err.code === 401 || err.code === 404) return { error: 'Telegram says this token isn’t valid. Copy it again from BotFather, or send /token there to get a fresh one.', status: 400 };
+      return { error: err.code ? `Telegram error: ${err.message}` : `Couldn’t reach Telegram: ${err.message}`, status: 502 };
+    }
     const old = await this.telegram();
     const tg = { token, username: me.username, secret: randomToken(), linkCode: randomToken(9), chatId: null, alsoPush: old?.alsoPush ?? false };
     try { await bot.setWebhook(`${origin}/telegram/webhook`, tg.secret); }

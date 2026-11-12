@@ -496,7 +496,7 @@
           <li>Send <code>/newbot</code>, then pick a name and a username ending in <strong>bot</strong>.</li>
           <li>BotFather replies with a token. Copy it and paste it below.</li>
         </ol>
-        <input type="password" id="tg-token" placeholder="123456789:AA…" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <input type="text" id="tg-token" placeholder="123456789:AA…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="width:100%;font-family:ui-monospace,Menlo,monospace;font-size:15px">
         <div class="row" style="margin-top:12px"><button class="primary" id="tg-save">Connect bot</button></div>
         <p class="err" id="tg-msg" style="margin:10px 0 0"></p>`;
       $('tg-save').addEventListener('click', async () => {

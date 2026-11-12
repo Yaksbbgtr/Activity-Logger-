@@ -140,7 +140,7 @@ test('Telegram: setup, link, questions, replies, strangers ignored', async () =>
     core.handle(new Request(`https://logger.example.dev${path}`, { method, headers, body: body && JSON.stringify(body) }));
 
   assert.equal((await call('POST', '/api/telegram', { token: 'nope' })).status, 400);
-  assert.equal((await call('POST', '/api/telegram', { token: '123456789:AAEhBP0av18bTGnStoWRONGWRONGWRONGWRONGW' })).status, 400);
+  assert.match((await call('POST', '/api/telegram', { token: '123456789:AAEhBP0av18bTGnStoWRONGWRONGWRONGWRONGW' })).error, /isn’t valid/);
 
   const setup = await call('POST', '/api/telegram', { token: TOKEN });
   assert.equal(setup.telegram.username, 'my_activity_bot');

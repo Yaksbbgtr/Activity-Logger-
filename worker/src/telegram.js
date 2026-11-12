@@ -9,7 +9,7 @@ export function randomToken(bytes = 18) {
 }
 
 export class Telegram {
-  constructor(token, fetchImpl = fetch) {
+  constructor(token, fetchImpl = (...args) => fetch(...args)) {
     this.token = token;
     this.fetchImpl = fetchImpl;
   }
