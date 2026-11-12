@@ -126,11 +126,14 @@
   /* Log */
   .log-day { margin: 20px 0 2px; font-size: .7rem; font-weight: 500; letter-spacing: .16em; text-transform: uppercase; color: var(--faint); }
   .log-day:first-child { margin-top: 4px; }
-  .entry { display: grid; grid-template-columns: 74px 1fr; gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+  .entry { display: grid; grid-template-columns: 74px 1fr auto; gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--line); }
   .entry:last-child { border-bottom: 0; }
   .entry time { color: var(--muted); font-size: .88rem; font-variant-numeric: tabular-nums; padding-top: 1px; }
   .entry .text { white-space: pre-wrap; word-break: break-word; }
   .entry .meta { font-size: .78rem; color: var(--faint); margin-top: 2px; }
+  .entry .del { width: 32px; height: 32px; margin: -5px -6px 0 0; padding: 0; border: 0; border-radius: 50%;
+    color: var(--faint); font-size: 1.25rem; line-height: 1; }
+  .entry .del:active { background: var(--field); color: var(--warn); }
   .entry.missed .text { color: var(--warn); font-style: italic; opacity: .85; }
   #empty { margin: 4px 0 0; font-size: .92rem; }
 
@@ -650,7 +653,23 @@
         meta.textContent = mins < 1 ? 'Answered right away' : `Answered at ${time(e.answered)}`;
         body.appendChild(meta);
       }
-      row.append(t, body);
+      const del = document.createElement('button');
+      del.className = 'del';
+      del.textContent = '×';
+      del.setAttribute('aria-label', 'Delete this entry');
+      del.addEventListener('click', async () => {
+        const what = e.status === 'missed' ? 'this missed entry' : `“${e.response.length > 40 ? e.response.slice(0, 40) + '…' : e.response}”`;
+        if (!confirm(`Delete ${what} from ${time(e.asked)}?`)) return;
+        del.disabled = true;
+        try {
+          await api('POST', '/api/log/delete', { asked: e.asked, answered: e.answered ?? null, status: e.status, response: e.response });
+          data.log = data.log.filter((x) => x !== e);
+          renderLog();
+        } catch (err) {
+          if (err.status === 404) refresh(); else { alert(err.message); del.disabled = false; }
+        }
+      });
+      row.append(t, body, del);
       box.appendChild(row);
     });
     $('empty').hidden = data.log.length > 0;

@@ -189,3 +189,14 @@ test('WhatsApp: setup, webhook verify, link, template vs text, replies, stop', a
   await call('POST', hookPath, inbound('15551234567', 'STOP'));
   assert.equal((await call('GET', '/api/state')).whatsapp.linked, false);
 });
+
+test('deleting one log entry', async () => {
+  let now = new Date('2026-11-16T09:00:00Z');
+  const core = new LoggerCore(memoryStorage(), {}, { clock: () => now });
+  const call = (method, path, body) => core.handle(new Request(`https://x${path}`, { method, body: body && JSON.stringify(body) }));
+  for (const t of ['one', 'two', 'three']) { await call('POST', '/api/answer', { text: t }); now = new Date(now.getTime() + 60000); }
+  const [, two] = (await call('GET', '/api/state')).log;
+  assert.deepEqual(await call('POST', '/api/log/delete', two), { ok: true });
+  assert.deepEqual((await call('GET', '/api/state')).log.map((e) => e.response), ['one', 'three']);
+  assert.equal((await call('POST', '/api/log/delete', two)).status, 404);
+});

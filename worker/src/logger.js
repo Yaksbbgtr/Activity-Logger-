@@ -259,6 +259,17 @@ export class LoggerCore {
       case 'POST /api/whatsapp': return this.setupWhatsApp(body, url.origin);
       case 'PUT /api/whatsapp': return this.updateWhatsApp(body);
       case 'DELETE /api/whatsapp': return this.removeWhatsApp();
+      case 'POST /api/log/delete': {
+        // Entries have no IDs; match on the exact times, status and text.
+        const state = await this.state();
+        const same = (e) => e.asked === body?.asked && (e.answered ?? null) === (body?.answered ?? null)
+          && e.status === body?.status && e.response === (body?.response ?? '');
+        const i = state.log.findLastIndex(same);
+        if (i === -1) return { error: 'That entry is already gone', status: 404 };
+        state.log.splice(i, 1);
+        await this.storage.put('state', state);
+        return { ok: true };
+      }
       case 'DELETE /api/log': {
         const state = await this.state();
         state.log = [];
