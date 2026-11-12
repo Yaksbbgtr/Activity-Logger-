@@ -132,7 +132,6 @@
 
 
   /* Header + menu */
-  .top { justify-content: space-between; }
   .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
   .icon-btn {
     width: 44px; height: 44px; padding: 0; border-radius: 50%; flex: none;
@@ -142,10 +141,10 @@
   .icon-btn svg { width: 20px; height: 20px; }
   #scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 10; }
   #drawer {
-    position: fixed; top: 0; right: 0; bottom: 0; width: min(300px, 84vw); z-index: 11;
-    background: var(--surface); border-left: 1px solid var(--line);
+    position: fixed; top: 0; left: 0; bottom: 0; width: min(300px, 84vw); z-index: 11;
+    background: var(--surface); border-right: 1px solid var(--line);
     padding: calc(env(safe-area-inset-top) + 24px) 12px 24px;
-    transform: translateX(100%); transition: transform .28s cubic-bezier(.2,.8,.2,1);
+    transform: translateX(-100%); transition: transform .28s cubic-bezier(.2,.8,.2,1);
     display: flex; flex-direction: column;
   }
   body.menu-open #scrim { opacity: 1; pointer-events: auto; }
@@ -177,14 +176,13 @@
 <main>
   <header class="top">
     <div class="brand">
-      <button class="icon-btn" id="back" aria-label="Back" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <button class="icon-btn" id="menu-btn" aria-label="Menu" aria-expanded="false" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
       <img class="logo" id="logo" src="icon-192.png" alt="">
       <div id="brand-text">
         <h1>Activity Logger</h1>
       </div>
       <h1 class="view-title" id="view-title" hidden></h1>
     </div>
-    <button class="icon-btn" id="menu-btn" aria-label="Menu" aria-expanded="false" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
   </header>
 
   <!-- Shown until the app knows its server and key -->
@@ -565,7 +563,6 @@
     view = next;
     document.querySelectorAll('[data-view]').forEach((el) => { el.hidden = el.dataset.view !== next; });
     const home = next === 'home';
-    $('back').hidden = home;
     $('logo').hidden = !home;
     $('brand-text').hidden = !home;
     $('view-title').hidden = home;
@@ -598,7 +595,6 @@
   });
   $('menu-btn').addEventListener('click', () => menu(!document.body.classList.contains('menu-open')));
   $('scrim').addEventListener('click', () => menu(false));
-  $('back').addEventListener('click', goHome);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') menu(false); });
   window.addEventListener('popstate', (e) => show(e.state?.view || 'home', { push: false }));
 
