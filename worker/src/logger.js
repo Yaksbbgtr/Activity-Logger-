@@ -50,9 +50,36 @@ export class LoggerCore {
     if (!slot || slot.key === state.lastSlot) return { sent: 0 };
     state.lastSlot = slot.key;
     if (slot.late > GRACE_MINUTES) { await this.storage.put('state', state); return { sent: 0 }; }
+    if (state.paused) {
+      // Paused: no reminder, but the time is marked so the gap in the log is explained.
+      this.addLog(state, { asked: slot.at.toISOString(), answered: null, response: '', status: 'paused' });
+      await this.storage.put('state', state);
+      return { sent: 0, paused: true };
+    }
     this.openPrompt(state, slot.at);
     await this.storage.put('state', state);
     return this.notifyAll(slot.at);
+  }
+
+  async pause() {
+    const state = await this.state();
+    if (!state.paused) {
+      state.paused = { since: this.clock().toISOString() };
+      // A question still waiting for an answer is marked paused rather than missed.
+      if (state.pending) {
+        this.addLog(state, { asked: state.pending.asked, answered: null, response: '', status: 'paused' });
+        state.pending = null;
+      }
+      await this.storage.put('state', state);
+    }
+    return { paused: state.paused, pending: state.pending, log: state.log };
+  }
+
+  async resume() {
+    const state = await this.state();
+    state.paused = null;
+    await this.storage.put('state', state);
+    return { paused: null, pending: state.pending, log: state.log };
   }
 
   /** "Ask me now": open a prompt immediately and send a reminder. */
@@ -245,7 +272,7 @@ export class LoggerCore {
       case 'POST /tick': return this.tick();
       case 'GET /api/state': {
         const [settings, state, subs, w] = await Promise.all([this.settings(), this.state(), this.subs(), this.whatsapp()]);
-        return { settings, pending: state.pending, log: state.log, devices: subs.length, whatsapp: this.whatsappInfo(w) };
+        return { settings, pending: state.pending, paused: state.paused ?? null, log: state.log, devices: subs.length, whatsapp: this.whatsappInfo(w) };
       }
       case 'PUT /api/settings': {
         const settings = sanitizeSettings(body);
@@ -256,6 +283,8 @@ export class LoggerCore {
       case 'POST /api/unsubscribe': return this.unsubscribe(String(body?.endpoint ?? ''));
       case 'POST /api/answer': return this.answer(body?.text);
       case 'POST /api/ask': return this.askNow();
+      case 'POST /api/pause': return this.pause();
+      case 'POST /api/resume': return this.resume();
       case 'POST /api/whatsapp': return this.setupWhatsApp(body, url.origin);
       case 'PUT /api/whatsapp': return this.updateWhatsApp(body);
       case 'DELETE /api/whatsapp': return this.removeWhatsApp();

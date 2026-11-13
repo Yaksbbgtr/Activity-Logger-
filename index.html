@@ -141,6 +141,12 @@
   .entry.editing { grid-template-columns: 74px 1fr; }
   .edit-box { min-height: 84px; font-size: 16px; }
   .entry.missed .text { color: var(--warn); font-style: italic; opacity: .85; }
+  .entry.paused .text { color: var(--muted); font-style: italic; }
+  .pause-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; color: var(--muted); }
+  .pause-btn svg { width: 15px; height: 15px; }
+  #checkin.is-paused .pause-btn { color: var(--gold); border-color: var(--gold-line); }
+  #checkin.is-paused { background: var(--surface); }
+  #checkin.is-paused .eyebrow { color: var(--muted); }
   #empty { margin: 4px 0 0; font-size: .92rem; }
 
 
@@ -263,6 +269,7 @@
           <button class="primary" id="submit">Log it</button>
           <span id="logged" class="ok"></span>
           <span id="submit-msg" class="err"></span>
+          <button class="pause-btn" id="pause-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M9 6v12M15 6v12"/></svg><span>Pause</span></button>
         </div>
       </div>
       <p class="nudge" id="nudge" hidden>Reminders are off on this device. <button data-go="reminders">Turn on</button></p>
@@ -516,18 +523,27 @@
     return null;
   }
 
+  const PAUSE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M9 6v12M15 6v12"/></svg>', PLAY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M8 5.5v13l10.5-6.5L8 5.5z"/></svg>';
+
   function render() {
-    const { settings, pending } = data;
+    const { settings, pending, paused } = data;
     const time = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     const n = nextPrompt(settings, new Date());
-    $('checkin').classList.toggle('pending', Boolean(pending));
-    $('checkin-label').textContent = pending ? 'Reminder' : 'Check-in';
-    $('checkin-meta').textContent = pending
-      ? 'Asked at ' + time(new Date(pending.asked))
-      : n ? `Next reminder ${dayLabel(n) === 'Today' ? 'at' : dayLabel(n) + ','} ${time(n)}` : 'No reminders scheduled';
-    $('status').textContent = pending ? 'Waiting for your answer · Next' : 'Next reminder';
-    $('next-time').textContent = n ? time(n) : '—';
-    $('next').textContent = n ? dayLabel(n) : 'No upcoming reminders. Add a time frame in Schedule.';
+    const since = paused && new Date(paused.since);
+    const sinceText = since && (dayLabel(since) === 'Today' ? time(since) : `${dayLabel(since)}, ${time(since)}`);
+    $('checkin').classList.toggle('pending', Boolean(pending) && !paused);
+    $('checkin').classList.toggle('is-paused', Boolean(paused));
+    $('checkin-label').textContent = paused ? 'Paused' : pending ? 'Reminder' : 'Check-in';
+    $('checkin-meta').textContent = paused
+      ? `Logging paused since ${sinceText}. No reminders until you resume.`
+      : pending
+        ? 'Asked at ' + time(new Date(pending.asked))
+        : n ? `Next reminder ${dayLabel(n) === 'Today' ? 'at' : dayLabel(n) + ','} ${time(n)}` : 'No reminders scheduled';
+    $('pause-btn').innerHTML = paused ? `${PLAY_ICON}<span>Resume</span>` : `${PAUSE_ICON}<span>Pause</span>`;
+    $('pause-btn').setAttribute('aria-pressed', String(Boolean(paused)));
+    $('status').textContent = paused ? 'Paused' : pending ? 'Waiting for your answer · Next' : 'Next reminder';
+    $('next-time').textContent = paused ? 'Paused' : n ? time(n) : '—';
+    $('next').textContent = paused ? `Since ${sinceText}. Resume from the Check-in screen.` : n ? dayLabel(n) : 'No upcoming reminders. Add a time frame in Schedule.';
     if (document.activeElement?.closest?.('#windows') == null && document.activeElement !== $('interval')) renderSchedule();
     renderLog();
     renderWhatsApp();
@@ -686,16 +702,17 @@
         lastDay = day;
       }
       const row = document.createElement('div');
-      row.className = 'entry' + (e.status === 'missed' ? ' missed' : '');
+      const blank = e.status === 'missed' || e.status === 'paused';
+      row.className = 'entry' + (blank ? ` ${e.status}` : '');
       const t = document.createElement('time');
       t.dateTime = e.asked; t.textContent = time(e.asked);
       const body = document.createElement('div');
       const text = document.createElement('div');
       text.className = 'text';
-      text.textContent = e.status === 'missed' ? 'Missed' : e.response;
+      text.textContent = e.status === 'missed' ? 'Missed' : e.status === 'paused' ? 'Paused' : e.response;
       body.appendChild(text);
       const metaText = e.edited ? (e.answered ? `Answered at ${time(e.answered)} · edited` : 'Filled in later')
-        : e.status !== 'missed' && e.answered
+        : !blank && e.answered
           ? (Math.round((new Date(e.answered) - new Date(e.asked)) / 60000) < 1 ? 'Answered right away' : `Answered at ${time(e.answered)}`)
           : '';
       if (metaText) {
@@ -714,8 +731,8 @@
         row.classList.add('editing');
         const area = document.createElement('textarea');
         area.className = 'edit-box';
-        area.value = e.status === 'missed' ? '' : e.response;
-        area.placeholder = e.status === 'missed' ? 'What were you doing?' : '';
+        area.value = blank ? '' : e.response;
+        area.placeholder = blank ? 'What were you doing?' : '';
         area.setAttribute('enterkeyhint', 'done');
         const btns = document.createElement('div');
         btns.className = 'row'; btns.style.marginTop = '8px';
@@ -731,7 +748,7 @@
         const doSave = async () => {
           const value = area.value.trim();
           if (!value) { msg.textContent = 'Type something, or use × to delete the entry.'; return; }
-          if (value === e.response && e.status !== 'missed') { close(); return; }
+          if (value === e.response && !blank) { close(); return; }
           save.disabled = true;
           try {
             const { entry } = await api('POST', '/api/log/edit', { entry: match(e), text: value });
@@ -758,7 +775,7 @@
       del.textContent = '×';
       del.setAttribute('aria-label', 'Delete this entry');
       del.addEventListener('click', async () => {
-        const what = e.status === 'missed' ? 'this missed entry' : `“${e.response.length > 40 ? e.response.slice(0, 40) + '…' : e.response}”`;
+        const what = blank ? `this ${e.status} entry` : `“${e.response.length > 40 ? e.response.slice(0, 40) + '…' : e.response}”`;
         if (!confirm(`Delete ${what} from ${time(e.asked)}?`)) return;
         del.disabled = true;
         try {
@@ -1007,6 +1024,16 @@
     $('test').disabled = false;
   });
   $('refresh').addEventListener('click', refresh);
+  $('pause-btn').addEventListener('click', async () => {
+    const btn = $('pause-btn');
+    btn.disabled = true;
+    try {
+      const r = await api('POST', data.paused ? '/api/resume' : '/api/pause');
+      Object.assign(data, { paused: r.paused, pending: r.pending, log: r.log });
+      render();
+    } catch (err) { $('submit-msg').textContent = err.message; }
+    finally { btn.disabled = false; }
+  });
   $('interval').addEventListener('change', (e) => {
     data.settings.interval = Math.min(240, Math.max(1, Number(e.target.value) || 10));
     e.target.value = data.settings.interval;

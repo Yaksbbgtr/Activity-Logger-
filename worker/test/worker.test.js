@@ -236,3 +236,38 @@ test('editing and deleting several entries at once', async () => {
   const d = await call('POST', '/api/log/delete-many', { entries: r.log.slice(1, 4) });
   assert.deepEqual(d.log.map((e) => e.asked.slice(11, 16)), ['14:00', '14:40']);
 });
+
+test('pausing: no reminders, slots marked paused, resume picks up again', async () => {
+  const pushes = [];
+  const keys = await vapidKeys();
+  const browser = fakeBrowser('https://push.example.com/live');
+  const fetchImpl = async (url, init) => { pushes.push(JSON.parse(browser.decrypt(init.body))); return new Response('', { status: 201 }); };
+  let now = new Date('2026-11-16T09:00:00Z');
+  const core = new LoggerCore(memoryStorage(), { VAPID_PUBLIC_KEY: keys.publicKey, VAPID_PRIVATE_KEY: keys.privateKey }, { fetchImpl, clock: () => now });
+  const call = (method, path, body) => core.handle(new Request(`https://x${path}`, { method, body: body && JSON.stringify(body) }));
+  await call('PUT', '/api/settings', { interval: 10, timezone: 'UTC', windows: [{ start: '09:00', end: '17:00', days: [1] }] });
+  await call('POST', '/api/subscribe', { subscription: browser.subscription });
+
+  await call('POST', '/tick'); // 09:00 question, left open
+  assert.equal(pushes.length, 1);
+  now = new Date('2026-11-16T09:05:00Z');
+  const p = await call('POST', '/api/pause');
+  assert.equal(p.paused.since, '2026-11-16T09:05:00.000Z');
+  assert.equal(p.pending, null);
+  assert.deepEqual(p.log.map((e) => [e.asked.slice(11, 16), e.status]), [['09:00', 'paused']], 'open question marked paused, not missed');
+
+  for (const t of ['09:10', '09:20']) { now = new Date(`2026-11-16T${t}:00Z`); assert.equal((await call('POST', '/tick')).paused, true); }
+  assert.equal(pushes.length, 1, 'no reminders while paused');
+  await call('POST', '/api/answer', { text: 'Logged by hand while paused' });
+
+  now = new Date('2026-11-16T09:25:00Z');
+  await call('POST', '/api/resume');
+  now = new Date('2026-11-16T09:30:00Z');
+  await call('POST', '/tick');
+  assert.equal(pushes.length, 2, 'reminders resume');
+  const st = await call('GET', '/api/state');
+  assert.equal(st.paused, null);
+  assert.deepEqual(st.log.map((e) => [e.asked.slice(11, 16), e.status]),
+    [['09:00', 'paused'], ['09:10', 'paused'], ['09:20', 'paused'], ['09:20', 'answered']]);
+  assert.equal(st.pending.asked, '2026-11-16T09:30:00.000Z');
+});
